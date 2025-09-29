@@ -30,4 +30,4 @@ We train as a **denoising** task:
 
 This teaches the model to **disentangle true ecological/functional compatibility** from random co-occurrence.
 
-> For an extended walkthrough and ablations, see the blog post: **[]**.
+> For an extended walkthrough and ablations, see the blog post: **[https://the-puzzler.github.io/the-puzzler/post.html?p=posts%2Fmicro-modelling%2Fmicro-modelling.html]**.
