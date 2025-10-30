@@ -81,7 +81,15 @@ per_class_f1 = {c: [] for c in []}
 per_class_auc = {c: [] for c in []}
 
 for fold, (tr, te) in enumerate(skf.split(X, y), start=1):
-    clf = LogisticRegression(max_iter=1000, class_weight='balanced', multi_class='auto', solver='lbfgs')
+    # Use selected configuration: lbfgs + L2, C=10, multinomial, no class weighting
+    clf = LogisticRegression(
+        solver='lbfgs',
+        penalty='l2',
+        C=10,
+        class_weight=None,
+        multi_class='multinomial',
+        max_iter=2000,
+    )
     clf.fit(X[tr], y[tr])
     y_pred = clf.predict(X[te])
     acc = accuracy_score(y[te], y_pred)
