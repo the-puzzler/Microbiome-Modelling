@@ -16,7 +16,11 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from scripts import utils as shared_utils  # noqa: E402
-from scripts.gingivitis.utils import load_gingivitis_run_data, collect_micro_to_otus  # noqa: E402
+from scripts.gingivitis.utils import (
+    load_gingivitis_run_data,
+    collect_micro_to_otus,
+    plot_dropout_summary,
+)  # noqa: E402
 
 
 #%% Load gingivitis runs and map to MicrobeAtlas SRS
@@ -214,6 +218,8 @@ else:
         overall_ap = average_precision_score(y_drop, prob_drop)
         pos_frac = float(y_drop.mean())
         print(f'Overall ROC AUC: {overall_auc:.4f} | AP: {overall_ap:.4f} | dropout rate: {pos_frac:.3f}')
+        # Visualise distributions and ROC
+        plot_dropout_summary(y_score_all, y_drop, title_prefix='Gingiva')
     else:
         print('Overall dataset has a single class; ROC/AUPRC undefined.')
 
