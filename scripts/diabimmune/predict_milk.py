@@ -46,8 +46,8 @@ so its mothers milk vs other. I then also had to downsample mothers milk.
 import csv
 import numpy as np
 
-samples_path = 'data/samples.csv'
-milk_path = 'data/milk.csv'
+samples_path = 'data/diabimmune/samples.csv'
+milk_path = 'data/diabimmune/milk.csv'
 
 sample_rows = {}
 with open(samples_path) as f:

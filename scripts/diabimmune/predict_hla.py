@@ -29,8 +29,8 @@ I will simplify by dropping the smallest class and balancing the rest with down 
 #%% Collect sample-level records with HLA class and age.
 import numpy as np
 
-samples_path = 'data/samples.csv'
-hla_path = 'data/pregnancy_birth.csv'
+samples_path = 'data/diabimmune/samples.csv'
+hla_path = 'data/diabimmune/pregnancy_birth.csv'
 
 sample_rows = {}
 with open(samples_path) as f:

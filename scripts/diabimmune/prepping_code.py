@@ -1,5 +1,12 @@
 #%% First we need to read in the data.
 import csv
+import os
+import sys
+
+# Make sure we can import model.py from repo root when running this script directly
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 run_rows = {}
 SRA_to_micro = {}
@@ -8,7 +15,7 @@ micro_to_subject = {}
 micro_to_sample = {}
 
 
-for path in ('data/SraRunTable_wgs.csv', 'data/SraRunTable_extra.csv'):
+for path in ('data/diabimmune/SraRunTable_wgs.csv', 'data/diabimmune/SraRunTable_extra.csv'):
     with open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -18,7 +25,7 @@ for path in ('data/SraRunTable_wgs.csv', 'data/SraRunTable_extra.csv'):
             run_rows[run_id] = {'library': library_name, 'subject': subject_id}
 
 
-with open('data/microbeatlas_samples.tsv') as f:
+with open('data/diabimmune/microbeatlas_samples.tsv') as f:
     reader = csv.DictReader(f, delimiter='\t')
     for row in reader:
         srs = row['#sid']
@@ -31,7 +38,7 @@ with open('data/microbeatlas_samples.tsv') as f:
                 SRA_to_micro[rid] = srs
 
 
-with open('data/samples.csv') as f:
+with open('data/diabimmune/samples.csv') as f:
     header = None
     for line in f:
         line = line.strip()
@@ -71,7 +78,7 @@ Once we have the subject IDs it is easy to join pregnancy_birth, diabetes, growt
 
 #%% Collect OTUs per microbeatlas sample.
 import h5py
-biom_path = 'data/samples-otus.97.metag.minfilter.minCov90.noMulticell.rod2025companion.biom'
+biom_path = 'data/microbeatlas/samples-otus.97.metag.minfilter.minCov90.noMulticell.rod2025companion.biom'
 
 micro_to_otus = {}
 needed_srs = set(SRA_to_micro.values()) | set(micro_to_subject.keys())
@@ -117,7 +124,7 @@ import torch
 from tqdm import tqdm
 from model import MicrobiomeTransformer
 
-checkpoint_path = 'data/checkpoint_epoch_0_final_epoch3_conf00.pt'
+checkpoint_path = 'data/model/checkpoint_epoch_0_final_epoch3_conf00.pt'
 
 D_MODEL = 100
 NHEAD = 5
@@ -148,7 +155,7 @@ model.eval()
 print('model ready on', device)
 
 #%%
-prokbert_path = 'data/prokbert_embeddings.h5'
+prokbert_path = 'data/model/prokbert_embeddings.h5'
 
 with h5py.File(prokbert_path) as emb_file:
     embedding_group = emb_file['embeddings']
