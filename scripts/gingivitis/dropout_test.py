@@ -84,44 +84,17 @@ if rename_map:
     resolver = shared_utils.build_otu_key_resolver(micro_to_otus, rename_map, shared_utils.PROKBERT_PATH, prefer='B')
 
 
-#%% Helper: score OTUs for a single SRS sample using model output head
+#%% Helper: score OTUs for a single SRS via shared util (raw logits)
 def score_otus_for_srs(srs, prokbert_file, model, device, resolver=None):
-    otu_ids = micro_to_otus.get(srs, [])
-    if not otu_ids:
-        return {}
-    otu_vecs = []
-    kept_ids = []
-    for oid in otu_ids:
-        candidates = []
-        if resolver and oid in resolver:
-            candidates.append(resolver[oid])
-        candidates.append(oid)
-        key_found = None
-        for key in candidates:
-            if key in prokbert_file['embeddings']:
-                key_found = key
-                break
-        if key_found is not None:
-            vec = prokbert_file['embeddings'][key_found][()]
-            otu_vecs.append(torch.tensor(vec, dtype=torch.float32, device=device))
-            kept_ids.append(oid)
-    if not otu_vecs:
-        return {}
-    x1 = torch.stack(otu_vecs, dim=0).unsqueeze(0)  # (1, N, 384)
-    # No text embeddings available: pass an empty type2 tensor
-    x2 = torch.empty((1, 0, shared_utils.TXT_EMB), dtype=torch.float32, device=device)
-    total_len = x1.shape[1] + x2.shape[1]
-    mask = torch.ones((1, total_len), dtype=torch.bool, device=device)
-    type_ind = torch.zeros((1, total_len), dtype=torch.long, device=device)
-    with torch.no_grad():
-        # Always use raw logits path
-        h1 = model.input_projection_type1(x1)
-        h2 = model.input_projection_type2(x2)
-        h = torch.cat([h1, h2], dim=1)
-        h = model.transformer(h, src_key_padding_mask=~mask)
-        logits_t = model.output_projection(h).squeeze(-1)
-        logits = logits_t.squeeze(0).detach().cpu().numpy()
-    return dict(zip(kept_ids, logits))
+    emb_group = prokbert_file['embeddings']
+    return shared_utils.score_otus_for_srs(
+        srs,
+        micro_to_otus=micro_to_otus,
+        resolver=resolver,
+        model=model,
+        device=device,
+        emb_group=emb_group,
+    )
 
 
 #%% Compute per subject-time per-OTU averaged logits across samples
@@ -144,19 +117,10 @@ with h5py.File(shared_utils.PROKBERT_PATH) as emb_file:
             subject_time_otu_scores[(subject, time_code)] = {}
             subject_time_otu_presence[(subject, time_code)] = set()
             continue
-        # Union of OTUs across samples in this (subject,time) group
-        union_otus = set()
-        for d in sample_dicts:
-            union_otus.update(d.keys())
-        # Align and average, ignoring missing values per sample
-        avg_scores = {}
-        for otu in union_otus:
-            vals = [d[otu] for d in sample_dicts if otu in d]
-            if vals:
-                avg_scores[otu] = float(np.mean(vals))
-        presence = set(union_otus)
+        # Union-average logits across SRS in the group
+        avg_scores = shared_utils.union_average_logits(sample_dicts)
         subject_time_otu_scores[(subject, time_code)] = avg_scores
-        subject_time_otu_presence[(subject, time_code)] = presence
+        subject_time_otu_presence[(subject, time_code)] = set(avg_scores.keys())
 
 print('computed score maps for groups:', len(subject_time_otu_scores))
 
@@ -203,25 +167,22 @@ for subject, pairs in tqdm(pairs_by_subject.items(), desc='Building T1→T2 exam
 y_true_all = np.array(y_true_all, dtype=np.int64)
 y_score_all = np.array(y_score_all, dtype=np.float32)
 print('total examples:', len(y_true_all))
-if len(y_true_all) == 0:
-    print('No examples could be constructed. Check mappings and timepoints.')
-else:
-    # Overall metrics (skip if only one class present)
-    if y_true_all.min() != y_true_all.max():
-        # Dropout perspective only: label=1 means dropped out at T2
-        y_drop = 1 - y_true_all
-        # Use negative logits as decision scores (monotonic to 1 - prob)
-        scores_drop = -y_score_all
-        probs = 1 / (1 + np.exp(-y_score_all))
-        prob_drop = 1 - probs
-        overall_auc = roc_auc_score(y_drop, scores_drop)
-        overall_ap = average_precision_score(y_drop, prob_drop)
-        pos_frac = float(y_drop.mean())
-        print(f'Overall ROC AUC: {overall_auc:.4f} | AP: {overall_ap:.4f} | dropout rate: {pos_frac:.3f}')
-        # Visualise distributions and ROC
-        plot_dropout_summary(y_score_all, y_drop, title_prefix='Gingiva')
-    else:
-        print('Overall dataset has a single class; ROC/AUPRC undefined.')
+
+ 
+# Dropout perspective only: label=1 means dropped out at T2
+y_drop = 1 - y_true_all
+# Use negative logits as decision scores (monotonic to 1 - prob)
+scores_drop = -y_score_all
+probs = 1 / (1 + np.exp(-y_score_all))
+prob_drop = 1 - probs
+overall_auc = roc_auc_score(y_drop, scores_drop)
+overall_ap = average_precision_score(y_drop, prob_drop)
+pos_frac = float(y_drop.mean())
+print(f'Overall ROC AUC: {overall_auc:.4f} | AP: {overall_ap:.4f} | dropout rate: {pos_frac:.3f}')
+# Visualise distributions and ROC
+plot_dropout_summary(y_score_all, y_drop, title_prefix='Gingiva')
+
+        
 
 
 

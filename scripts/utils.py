@@ -339,3 +339,48 @@ def translate_otu_ids(otu_ids, rename_map, direction='new_to_old'):
         return list(otu_ids)
     mapper = rename_map.get(direction, {})
     return [mapper.get(oid, oid) for oid in otu_ids]
+
+
+def score_otus_for_srs(srs, micro_to_otus, resolver, model, device, emb_group, txt_emb=TXT_EMB):
+    """
+    Compute raw per-OTU logits for a single SRS.
+    - Looks up OTU vectors via resolver (exact HDF5 embedding keys) with fallback to raw ID
+    - Runs input_projection_type1 → transformer → output_projection
+    Returns dict {otu_id: logit}
+    """
+    otu_ids = micro_to_otus.get(srs, [])
+    if not otu_ids:
+        return {}
+    vecs = []
+    keep = []
+    for oid in otu_ids:
+        key = resolver.get(oid, oid) if resolver else oid
+        if key in emb_group:
+            vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32, device=device))
+            keep.append(oid)
+    if not vecs:
+        return {}
+    x1 = torch.stack(vecs, dim=0).unsqueeze(0)
+    x2 = torch.empty((1, 0, txt_emb), dtype=torch.float32, device=device)
+    mask = torch.ones((1, x1.shape[1]), dtype=torch.bool, device=device)
+    with torch.no_grad():
+        h = model.input_projection_type1(x1)
+        h = model.transformer(h, src_key_padding_mask=~mask)
+        logits = model.output_projection(h).squeeze(-1).squeeze(0).cpu().numpy()
+    return dict(zip(keep, logits))
+
+
+def union_average_logits(per_sample_dicts):
+    """
+    Given a list of {otu_id: logit} dicts (e.g., per-SRS), return a single dict
+    where each OTU's value is the mean of available logits across samples.
+    """
+    if not per_sample_dicts:
+        return {}
+    union = set().union(*[d.keys() for d in per_sample_dicts])
+    out = {}
+    for oid in union:
+        vals = [d[oid] for d in per_sample_dicts if oid in d]
+        if vals:
+            out[oid] = float(sum(vals) / len(vals))
+    return out
