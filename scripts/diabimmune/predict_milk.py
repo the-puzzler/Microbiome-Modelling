@@ -192,9 +192,11 @@ for start, end in bin_ranges:
         y_test = y[test_idx]
 
         clf = LogisticRegression(
-            max_iter=1000,
+            max_iter=5000,
+            tol=1e-3,
             solver='lbfgs',
-            class_weight='balanced'
+            class_weight='balanced',
+       
         )
         clf.fit(X_train, y_train)
         probas = clf.predict_proba(X_test)
