@@ -14,3 +14,6 @@ it makes more difference.
 okay so conf02 is actually only mildly better than conf00, there was a proble, with text addition before
 so it seems even conf00 also gets to 0.77 with text now! but i prefer conf02 so will stick with that.
 still, i will need to try perturbations on text to see if there any benefits.
+
+
+adding perturbations onto text didnt seem to help

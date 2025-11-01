@@ -124,6 +124,9 @@ def build_sample_embeddings(
     device,
     prokbert_path=shared_utils.PROKBERT_PATH,
     txt_emb=shared_utils.TXT_EMB,
+    srs_to_terms=None,
+    term_to_vec=None,
+    include_text: bool = False,
 ):
     rename_map = None
     try:
@@ -146,4 +149,7 @@ def build_sample_embeddings(
         txt_emb=txt_emb,
         rename_map=rename_map,
         resolver=resolver,
+        srs_to_terms=srs_to_terms,
+        term_to_vec=term_to_vec,
+        include_text=include_text,
     )

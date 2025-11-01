@@ -5,6 +5,7 @@ import re
 
 import h5py
 import torch
+import numpy as np
 from tqdm import tqdm
 
 # Ensure project root is on sys.path so we can import model.py from the repo root
@@ -18,7 +19,7 @@ from model import MicrobiomeTransformer
 # Default paths shared across tasks
 MICROBEATLAS_SAMPLES = 'data/diabimmune/microbeatlas_samples.tsv'
 MAPPED_PATH = 'data/microbeatlas/samples-otus.97.mapped'
-CHECKPOINT_PATH = 'data/model/checkpoint_epoch_0_final_conf02.pt' #_epoch3 doesnt seem to have any advantage from text embeddings...?
+CHECKPOINT_PATH = 'data/model/checkpoint_epoch_0_final_conf02.pt'
 PROKBERT_PATH = 'data/model/prokbert_embeddings.h5'
 RENAME_MAP_PATH = 'data/microbeatlas/otus.rename.map1'
 
@@ -181,6 +182,9 @@ def build_sample_embeddings(
     txt_emb=TXT_EMB,
     rename_map=None,
     resolver=None,
+    srs_to_terms=None,
+    term_to_vec=None,
+    include_text: bool = False,
 ):
     sample_embeddings = {}
     missing_otus = 0
@@ -209,8 +213,13 @@ def build_sample_embeddings(
             if not otu_vectors:
                 continue
             otu_tensor = torch.stack(otu_vectors, dim=0).unsqueeze(0)
+            # Optional text (type2) tokens
             type2_tensor = torch.zeros((1, 0, txt_emb), dtype=torch.float32, device=device)
-            mask = torch.ones((1, otu_tensor.shape[1]), dtype=torch.bool, device=device)
+            if include_text and srs_to_terms and term_to_vec is not None:
+                terms = [t for t in sorted(srs_to_terms.get(sample_key, set())) if t in term_to_vec]
+                if terms:
+                    type2_tensor = torch.stack([term_to_vec[t] for t in terms], dim=0).unsqueeze(0)
+            mask = torch.ones((1, otu_tensor.shape[1] + type2_tensor.shape[1]), dtype=torch.bool, device=device)
             with torch.no_grad():
                 hidden_type1 = model.input_projection_type1(otu_tensor)
                 hidden_type2 = model.input_projection_type2(type2_tensor)
@@ -368,6 +377,192 @@ def score_otus_for_srs(srs, micro_to_otus, resolver, model, device, emb_group, t
         h = model.transformer(h, src_key_padding_mask=~mask)
         logits = model.output_projection(h).squeeze(-1).squeeze(0).cpu().numpy()
     return dict(zip(keep, logits))
+
+
+def score_otus_for_srs_with_text(
+    srs,
+    micro_to_otus,
+    resolver,
+    model,
+    device,
+    emb_group,
+    term_to_vec,
+    srs_to_terms,
+    txt_emb=TXT_EMB,
+):
+    """
+    Compute per-OTU logits for a single SRS including text tokens (type2) if available.
+    Concatenates type1 (OTU) and type2 (text) projections, runs transformer and slices
+    logits for the type1 positions.
+    Returns dict {otu_id: logit}.
+    """
+    otu_ids = micro_to_otus.get(srs, [])
+    if not otu_ids:
+        return {}
+    vecs = []
+    keep = []
+    for oid in otu_ids:
+        key = resolver.get(oid, oid) if resolver else oid
+        if key in emb_group:
+            vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32, device=device))
+            keep.append(oid)
+    if not vecs:
+        return {}
+    x1 = torch.stack(vecs, dim=0).unsqueeze(0)
+    # Build type2 (text) tensor from provided mappings
+    if srs_to_terms is not None and term_to_vec is not None:
+        t_terms = [t for t in sorted(srs_to_terms.get(srs, set())) if t in term_to_vec]
+        x2 = torch.stack([term_to_vec[t] for t in t_terms], dim=0).unsqueeze(0) if t_terms else torch.zeros((1, 0, txt_emb), dtype=torch.float32, device=device)
+    else:
+        x2 = torch.zeros((1, 0, txt_emb), dtype=torch.float32, device=device)
+    n1 = x1.shape[1]
+    mask = torch.ones((1, n1 + x2.shape[1]), dtype=torch.bool, device=device)
+    with torch.no_grad():
+        h1 = model.input_projection_type1(x1)
+        h2 = model.input_projection_type2(x2)
+        h = torch.cat([h1, h2], dim=1)
+        h = model.transformer(h, src_key_padding_mask=~mask)
+        logits = model.output_projection(h).squeeze(-1)
+    logits_type1 = logits[:, :n1].squeeze(0).cpu().numpy()
+    return dict(zip(keep, logits_type1))
+
+
+def score_otu_list(
+    otu_ids,
+    resolver,
+    model,
+    device,
+    emb_group,
+    txt_emb=TXT_EMB,
+):
+    """
+    Score an arbitrary list of OTU ids without text tokens.
+    Returns dict {otu_id: logit}.
+    """
+    if not otu_ids:
+        return {}
+    vecs = []
+    keep = []
+    for oid in otu_ids:
+        key = resolver.get(oid, oid) if resolver else oid
+        if key in emb_group:
+            vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32, device=device))
+            keep.append(oid)
+    if not vecs:
+        return {}
+    x1 = torch.stack(vecs, dim=0).unsqueeze(0)
+    # Empty type2 to align with model forward expectations
+    x2 = torch.zeros((1, 0, txt_emb), dtype=torch.float32, device=device)
+    mask = torch.ones((1, x1.shape[1] + x2.shape[1]), dtype=torch.bool, device=device)
+    with torch.no_grad():
+        h1 = model.input_projection_type1(x1)
+        h2 = model.input_projection_type2(x2)
+        h = torch.cat([h1, h2], dim=1)
+        h = model.transformer(h, src_key_padding_mask=~mask)
+        logits = model.output_projection(h).squeeze(-1).squeeze(0).cpu().numpy()
+    return dict(zip(keep, logits))
+
+def score_otu_list_with_text(
+    srs,
+    otu_ids,
+    resolver,
+    model,
+    device,
+    emb_group,
+    term_to_vec,
+    srs_to_terms,
+    txt_emb=TXT_EMB,
+):
+    """
+    Score an arbitrary list of OTU ids for a given SRS with text tokens included.
+    Returns dict {otu_id: logit} for the provided list (order preserved in output slice).
+
+    This is like score_otus_for_srs_with_text, but takes an explicit otu_ids list
+    (useful for colonisation experiments where we add a target OTU to T1).
+    """
+    if not otu_ids:
+        return {}
+    vecs = []
+    keep = []
+    for oid in otu_ids:
+        key = resolver.get(oid, oid) if resolver else oid
+        if key in emb_group:
+            vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32, device=device))
+            keep.append(oid)
+    if not vecs:
+        return {}
+    x1 = torch.stack(vecs, dim=0).unsqueeze(0)
+    # Build type2 (text) tensor
+    t_terms = [t for t in sorted(srs_to_terms.get(srs, set())) if t in term_to_vec] if srs_to_terms is not None else []
+    x2 = (torch.stack([term_to_vec[t] for t in t_terms], dim=0).unsqueeze(0)
+          if t_terms else torch.zeros((1, 0, txt_emb), dtype=torch.float32, device=device))
+    n1 = x1.shape[1]
+    mask = torch.ones((1, n1 + x2.shape[1]), dtype=torch.bool, device=device)
+    with torch.no_grad():
+        h1 = model.input_projection_type1(x1)
+        h2 = model.input_projection_type2(x2)
+        h = torch.cat([h1, h2], dim=1)
+        h = model.transformer(h, src_key_padding_mask=~mask)
+        logits = model.output_projection(h).squeeze(-1)
+    logits_type1 = logits[:, :n1].squeeze(0).cpu().numpy()
+    return dict(zip(keep, logits_type1))
+
+def load_term_embeddings(pkl_path= 'data/microbeatlas/word_embeddings_dany_biomes_combined_dany_og_biome_tech.pkl', device=None):
+    """
+    Load term -> embedding mapping from pickle. Lowercases terms and returns torch tensors on device.
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    import pickle as _pkl
+    with open(pkl_path, 'rb') as f:
+        obj = _pkl.load(f)
+    return {str(k).lower(): torch.tensor(np.asarray(v), dtype=torch.float32, device=device) for k, v in obj.items()}
+
+
+def parse_run_terms(tsv_path='data/microbeatlas/sample_terms_mapping_combined_dany_og_biome_tech.txt'):
+    """
+    Parse a tab-separated RunID -> terms mapping file.
+    Returns dict: run_id -> [term, ...]
+    """
+    run_to_terms = {}
+    with open(tsv_path, 'r', errors='replace') as f:
+        header = f.readline()
+        for line in f:
+            parts = line.rstrip('\n').split('\t')
+            if not parts:
+                continue
+            rid = parts[0].strip()
+            terms = [t.strip().lower() for t in parts[1:] if t and t.strip()]
+            if rid and terms:
+                run_to_terms[rid] = terms
+    return run_to_terms
+
+
+def build_srs_terms(run_to_srs, run_to_terms, mapped_path=MAPPED_PATH):
+    """
+    Build SRS -> union of terms by expanding all accessions that resolve to the same SRS
+    using the mapped MicrobeAtlas headers.
+    Args:
+        run_to_srs: dict run/accession -> SRS
+        run_to_terms: dict run/accession -> list[str]
+    Returns dict srs -> set[str]
+    """
+    acc_to_srs = build_accession_to_srs_from_mapped(mapped_path)
+    srs_to_accs = {}
+    for acc, srs in acc_to_srs.items():
+        srs_to_accs.setdefault(srs, []).append(acc)
+    # ensure direct mapping runs are included
+    for acc, srs in run_to_srs.items():
+        srs_to_accs.setdefault(srs, []).append(acc)
+    srs_to_terms = {}
+    for srs, accs in srs_to_accs.items():
+        terms = set()
+        for acc in accs:
+            if acc in run_to_terms:
+                terms.update(run_to_terms[acc])
+        if terms:
+            srs_to_terms[srs] = terms
+    return srs_to_terms
 
 
 def union_average_logits(per_sample_dicts):

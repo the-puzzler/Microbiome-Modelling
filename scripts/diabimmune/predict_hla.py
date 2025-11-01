@@ -1,11 +1,20 @@
-#%%
-from utils import (
+#%% Imports and setup
+import os
+import sys
+
+# Ensure project root is on sys.path so absolute imports like `scripts.*` work
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from scripts.diabimmune.utils import (
     load_run_data,
     collect_micro_to_otus,
     load_microbiome_model,
     preview_prokbert_embeddings,
     build_sample_embeddings,
 )
+from scripts import utils as shared_utils  # access shared text+embedding helpers
 
 #%%
 run_rows, SRA_to_micro, gid_to_sample, micro_to_subject, micro_to_sample = load_run_data()
@@ -16,7 +25,17 @@ model, device = load_microbiome_model()
 #%%
 preview_prokbert_embeddings()
 #%%
-sample_embeddings, missing_otus = build_sample_embeddings(micro_to_otus, model, device)
+# Include text embeddings in sample vectors
+term_to_vec = shared_utils.load_term_embeddings()
+run_to_terms = shared_utils.parse_run_terms()
+run_to_srs = SRA_to_micro
+srs_to_terms = shared_utils.build_srs_terms(run_to_srs, run_to_terms, shared_utils.MAPPED_PATH)
+sample_embeddings, missing_otus = build_sample_embeddings(
+    micro_to_otus, model, device,
+    srs_to_terms=srs_to_terms,
+    term_to_vec=term_to_vec,
+    include_text=True,
+)
 # %%
 
 """

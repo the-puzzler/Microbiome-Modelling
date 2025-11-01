@@ -183,79 +183,32 @@ print(f'Overall ROC AUC: {overall_auc:.4f} | AP: {overall_ap:.4f} | dropout rate
         
 
 
-#%% Text metadata integration — clean comparison (no fallbacks)
-import pickle as _pkl
+#%% Text metadata integration — clean comparison (shared utils)
 import matplotlib.pyplot as _plt
 
-TERMS_MAP_TSV = 'data/microbeatlas/sample_terms_mapping_combined_dany_og_biome_tech.txt'
-TEXT_EMB_PKL = 'data/microbeatlas/word_embeddings_dany_biomes_combined_dany_og_biome_tech.pkl'
+# Load text embeddings and RunID->terms mapping
+term_to_vec = shared_utils.load_term_embeddings()
+run_to_terms = shared_utils.parse_run_terms()
 
-# Load term embeddings (term -> np.array), lowercased, tensors on device
-with open(TEXT_EMB_PKL, 'rb') as _f:
-    _term_to_vec_np = _pkl.load(_f)
-term_to_vec = {str(k).lower(): torch.tensor(np.asarray(v), dtype=torch.float32, device=device)
-               for k, v in _term_to_vec_np.items()}
-
-# Parse RunID -> terms (tab-separated, 1st col is RunID, rest are terms)
-run_to_terms = {}
-with open(TERMS_MAP_TSV, 'r', errors='replace') as _f:
-    _f.readline()  # header
-    for line in _f:
-        parts = line.rstrip('\n').split('\t')
-        if not parts:
-            continue
-        rid = parts[0].strip()
-        terms = [t.strip().lower() for t in parts[1:] if t and t.strip()]
-        if rid and terms:
-            run_to_terms[rid] = terms
-
-# Build SRS -> terms by expanding all accessions mapping to the same SRS
-acc_to_srs = shared_utils.build_accession_to_srs_from_mapped(shared_utils.MAPPED_PATH)
-srs_to_accs = defaultdict(list)
-for acc, srs in acc_to_srs.items():
-    srs_to_accs[srs].append(acc)
-
-srs_to_terms = defaultdict(set)
-for r in records:
-    srs = r['srs']
-    for acc in srs_to_accs.get(srs, []):
-        if acc in run_to_terms:
-            srs_to_terms[srs].update(run_to_terms[acc])
-
-# Helper: score SRS with both OTU and text embeddings (text active)
-def score_otus_for_srs_with_text(srs, prokbert_file, model, device, resolver=None):
-    otu_ids = micro_to_otus.get(srs, [])
-    if not otu_ids:
-        return {}
-    emb_group = prokbert_file['embeddings']
-    vecs, keep = [], []
-    for oid in otu_ids:
-        key = resolver.get(oid, oid) if resolver else oid
-        if key in emb_group:
-            vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32, device=device))
-            keep.append(oid)
-    if not vecs:
-        return {}
-    x1 = torch.stack(vecs, dim=0).unsqueeze(0)
-    t_terms = [t for t in sorted(srs_to_terms.get(srs, set())) if t in term_to_vec]
-    x2 = torch.stack([term_to_vec[t] for t in t_terms], dim=0).unsqueeze(0) if t_terms else torch.empty((1, 0, int(shared_utils.TXT_EMB)), dtype=torch.float32, device=device)
-    n1, n2 = x1.shape[1], x2.shape[1]
-    mask = torch.ones((1, n1 + n2), dtype=torch.bool, device=device)
-    with torch.no_grad():
-        h1 = model.input_projection_type1(x1)
-        h2 = model.input_projection_type2(x2)
-        h = torch.cat([h1, h2], dim=1)
-        h = model.transformer(h, src_key_padding_mask=~mask)
-        out = model.output_projection(h).squeeze(-1)
-    logits_type1 = out[:, :n1].squeeze(0).detach().cpu().numpy()
-    return dict(zip(keep, logits_type1))
+# Build SRS -> terms using MicrobeAtlas mapped headers expansion
+run_to_srs = SRA_to_micro  # reuse mapping loaded above
+srs_to_terms = shared_utils.build_srs_terms(run_to_srs, run_to_terms, shared_utils.MAPPED_PATH)
 
 # Per-(subject,time) averaged logits with text
 subject_time_otu_scores_text = {}
 subject_time_otu_presence_text = {}
 with h5py.File(shared_utils.PROKBERT_PATH) as _embf:
     for (subject, time_code), srs_list in tqdm(list(subject_time_to_srs.items()), desc='Scoring with text'):
-        sdicts = [score_otus_for_srs_with_text(srs, _embf, model, device, resolver=resolver) for srs in srs_list]
+        sdicts = [shared_utils.score_otus_for_srs_with_text(
+            srs,
+            micro_to_otus=micro_to_otus,
+            resolver=resolver,
+            model=model,
+            device=device,
+            emb_group=_embf['embeddings'],
+            term_to_vec=term_to_vec,
+            srs_to_terms=srs_to_terms,
+        ) for srs in srs_list]
         sdicts = [d for d in sdicts if d]
         avg = shared_utils.union_average_logits(sdicts) if sdicts else {}
         subject_time_otu_scores_text[(subject, time_code)] = avg
@@ -300,31 +253,108 @@ _plt.tight_layout()
 _plt.show()
 
 # Shared-axis density comparison for logits (no text vs with text)
-try:
-    xmin = float(min(y_score_all.min(), y_score_txt.min())) if y_score_txt.size else float(y_score_all.min())
-    xmax = float(max(y_score_all.max(), y_score_txt.max())) if y_score_txt.size else float(y_score_all.max())
-    # Estimate a common y-limit by computing density maxima over both cases
-    def _max_density(vals, labels, bins=40, rng=(xmin, xmax)):
-        vals = np.asarray(vals, dtype=float)
-        y = np.asarray(labels, dtype=int)
-        m0 = y == 0
-        m1 = y == 1
-        dens_max = 0.0
-        if np.any(m0):
-            h0, _ = np.histogram(vals[m0], bins=bins, range=rng, density=True)
-            dens_max = max(dens_max, float(h0.max()) if h0.size else 0.0)
-        if np.any(m1):
-            h1, _ = np.histogram(vals[m1], bins=bins, range=rng, density=True)
-            dens_max = max(dens_max, float(h1.max()) if h1.size else 0.0)
-        return dens_max
-    ymax_base = _max_density(y_score_all, y_drop)
-    ymax_text = _max_density(y_score_txt, y_drop_txt) if y_score_txt.size else 0.0
-    ylim = (0.0, max(ymax_base, ymax_text) * 1.05 if max(ymax_base, ymax_text) > 0 else None)
 
-    plot_dropout_summary(y_score_all, y_drop, title_prefix='Gingiva', xlim=(xmin, xmax), ylim=None if ylim[1] is None else (ylim[0], ylim[1]))
-    if y_score_txt.size:
-        plot_dropout_summary(y_score_txt, y_drop_txt, title_prefix='Gingiva (+ text)', xlim=(xmin, xmax), ylim=None if ylim[1] is None else (ylim[0], ylim[1]))
-except Exception as _e_shared:
-    print(f"Shared-axis density plotting failed: {_e_shared}")
+xmin = float(min(y_score_all.min(), y_score_txt.min())) if y_score_txt.size else float(y_score_all.min())
+xmax = float(max(y_score_all.max(), y_score_txt.max())) if y_score_txt.size else float(y_score_all.max())
+# Estimate a common y-limit by computing density maxima over both cases
+def _max_density(vals, labels, bins=40, rng=(xmin, xmax)):
+    vals = np.asarray(vals, dtype=float)
+    y = np.asarray(labels, dtype=int)
+    m0 = y == 0
+    m1 = y == 1
+    dens_max = 0.0
+    if np.any(m0):
+        h0, _ = np.histogram(vals[m0], bins=bins, range=rng, density=True)
+        dens_max = max(dens_max, float(h0.max()) if h0.size else 0.0)
+    if np.any(m1):
+        h1, _ = np.histogram(vals[m1], bins=bins, range=rng, density=True)
+        dens_max = max(dens_max, float(h1.max()) if h1.size else 0.0)
+    return dens_max
+ymax_base = _max_density(y_score_all, y_drop)
+ymax_text = _max_density(y_score_txt, y_drop_txt) if y_score_txt.size else 0.0
+ylim = (0.0, max(ymax_base, ymax_text) * 1.05 if max(ymax_base, ymax_text) > 0 else None)
+
+plot_dropout_summary(y_score_all, y_drop, title_prefix='Gingiva', xlim=(xmin, xmax), ylim=None if ylim[1] is None else (ylim[0], ylim[1]))
+if y_score_txt.size:
+    plot_dropout_summary(y_score_txt, y_drop_txt, title_prefix='Gingiva (+ text)', xlim=(xmin, xmax), ylim=None if ylim[1] is None else (ylim[0], ylim[1]))
+
+# %%
+#%% Term impact analysis (ablation on ROC AUC)
+# For each term, remove it from all SRS term-sets, rescore, and measure
+# AUC drop: contribution(term) = AUC_full_text - AUC_without_term
+# Positive values indicate the term helps; negative indicates it hurts.
+import matplotlib.pyplot as plt
+
+# Select candidate terms observed in gingiva runs only, then rank by frequency
+# Build set of terms attached to the gingiva dataset Run IDs
+gingiva_runs = {r['run'] for r in records}
+gingiva_terms = set()
+for run in gingiva_runs:
+    if run in run_to_terms:
+        gingiva_terms.update(run_to_terms[run])
+
+# Count frequencies across the SRS in this experiment, but only for gingiva-linked terms
+term_counts = {}
+for terms in srs_to_terms.values():
+    for t in terms:
+        if t in gingiva_terms:
+            term_counts[t] = term_counts.get(t, 0) + 1
+
+min_freq = 5
+max_terms = 20
+candidates = [t for t, c in sorted(term_counts.items(), key=lambda kv: kv[1], reverse=True) if c >= min_freq]
+if len(candidates) > max_terms:
+    candidates = candidates[:max_terms]
+
+contrib = {}
+with h5py.File(shared_utils.PROKBERT_PATH) as _embf:
+    emb_group = _embf['embeddings']
+    for term in candidates:
+        # Build SRS -> terms with the term removed
+        srs_to_terms_minus = {srs: (terms - {term}) if term in terms else terms for srs, terms in srs_to_terms.items()}
+        # Recompute per-(subject,time) averages with the term ablated
+        st_scores = {}
+        st_presence = {}
+        for (subject, time_code), srs_list in subject_time_to_srs.items():
+            sdicts = [shared_utils.score_otus_for_srs_with_text(
+                srs,
+                micro_to_otus=micro_to_otus,
+                resolver=resolver,
+                model=model,
+                device=device,
+                emb_group=emb_group,
+                term_to_vec=term_to_vec,
+                srs_to_terms=srs_to_terms_minus,
+            ) for srs in srs_list]
+            sdicts = [d for d in sdicts if d]
+            avg = shared_utils.union_average_logits(sdicts) if sdicts else {}
+            st_scores[(subject, time_code)] = avg
+            st_presence[(subject, time_code)] = set(avg.keys())
+        # Build examples and compute AUC with the term removed
+        y_true_m = []
+        y_score_m = []
+        for subject, pairs in pairs_by_subject.items():
+            for t1, t2 in pairs:
+                s1 = st_scores.get((subject, t1), {})
+                p2 = st_presence.get((subject, t2), set())
+                for otu, sc in s1.items():
+                    y_true_m.append(1 if otu in p2 else 0)
+                    y_score_m.append(sc)
+        y_true_m = np.asarray(y_true_m, dtype=np.int64)
+        y_score_m = np.asarray(y_score_m, dtype=np.float64)
+        auc_minus = roc_auc_score(1 - y_true_m, -y_score_m) if y_true_m.size else float('nan')
+        contrib[term] = float(auc_txt - auc_minus) if np.isfinite(auc_minus) and np.isfinite(auc_txt) else float('nan')
+
+# Plot contributions
+terms_sorted = [t for t, v in sorted(contrib.items(), key=lambda kv: (np.isnan(kv[1]), -kv[1] if not np.isnan(kv[1]) else 0)) if not np.isnan(v)]
+vals_sorted = [contrib[t] for t in terms_sorted]
+
+plt.figure(figsize=(10, 4.5))
+plt.bar(range(len(terms_sorted)), vals_sorted, color=['#1f77b4' if v >= 0 else '#d62728' for v in vals_sorted])
+plt.xticks(range(len(terms_sorted)), terms_sorted, rotation=45, ha='right')
+plt.ylabel('AUC contribution (Δ AUC)')
+plt.title('Per-term impact on dropout AUC (ablation)')
+plt.tight_layout()
+plt.show()
 
 # %%
