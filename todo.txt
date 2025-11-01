@@ -1,0 +1,16 @@
+see if training on text helps to make text valuable. right now
+it seems that epoch3 doesnt benefit from the addition of text embeddings but the other one does...
+
+currently im training a model with increased noise in case that was the problem. going from 0.15 ->0.33
+if that doesnt help text be useful, then i will additionally add the text perturbations back in
+to see if we recover the same beenfits of text pushing us from 0.7392 to 0.7563 (not the epoch3 one)
+albeit still lower than the 0.77 i get in the other code...
+
+alright just tried conf 03 that simply increased the noise amount to 0.33 and the result went up to
+0.74 without text, 0.762 with text! no text perturbations. I will now re add text perturbations and see if
+it makes more difference.
+
+
+okay so conf02 is actually only mildly better than conf00, there was a proble, with text addition before
+so it seems even conf00 also gets to 0.77 with text now! but i prefer conf02 so will stick with that.
+still, i will need to try perturbations on text to see if there any benefits.

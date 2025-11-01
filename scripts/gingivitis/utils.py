@@ -83,7 +83,7 @@ def build_sample_embeddings(
     )
 
 
-def plot_dropout_summary(logits_t1, labels_dropout, title_prefix="Dropout prediction"):
+def plot_dropout_summary(logits_t1, labels_dropout, title_prefix="Dropout prediction", xlim=None, ylim=None):
     """
     Create a 1x2 subplot figure:
     - Left: density hist of T1 logits, colored by dropped-out (1) vs persistent (0)
@@ -118,6 +118,10 @@ def plot_dropout_summary(logits_t1, labels_dropout, title_prefix="Dropout predic
     ax.set_ylabel('Density')
     ax.set_title(f'{title_prefix}: Logit densities')
     ax.legend()
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
 
     # ROC curve
     ax = axes[1]
