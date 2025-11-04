@@ -5,7 +5,7 @@ import sys
 import re
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
+import umap.umap_ as umap
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 # Ensure project root on sys.path
@@ -72,13 +72,11 @@ if kept == 0:
 X = np.stack(X_list)
 
 
-#%% PCA reduction to 2D/3D
-pca = PCA(n_components=3, random_state=42)
-X_pca = pca.fit_transform(X)
-X2 = X_pca[:, :2]
-X3 = X_pca[:, :3]
-print('explained variance (2D):', pca.explained_variance_ratio_[:2].sum())
-print('explained variance (3D):', pca.explained_variance_ratio_[:3].sum())
+#%% UMAP reduction to 2D/3D
+reducer = umap.UMAP(n_components=3, n_neighbors=15, min_dist=0.1, random_state=43)
+X_umap = reducer.fit_transform(X)
+X2 = X_umap[:, :2]
+X3 = X_umap[:, :3]
 
 
 #%% Helper for coloring and ordering
@@ -93,59 +91,34 @@ uniq_modes = ['C', 'V']
 mode_to_color = {'C': '#1f77b4', 'V': '#ff7f0e'}
 
 
-#%% 2D scatter: colored by age and by delivery mode
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-ax = axes[0]
+#%% 2D scatter: colored by age
+fig, ax = plt.subplots(1, 1, figsize=(6, 5))
 for age in uniq_ages:
     idx = [i for i, a in enumerate(age_labels) if a == age]
     if not idx:
         continue
     ax.scatter(X2[idx, 0], X2[idx, 1], s=6, alpha=0.8, c=[age_to_color[age]], label=age)
-ax.set_title('PCA 2D — colored by age')
-ax.set_xlabel('PC1')
-ax.set_ylabel('PC2')
+#ax.set_title('UMAP 2D — colored by age')
+ax.set_xlabel('UMAP1')
+ax.set_ylabel('UMAP2')
 ax.legend(markerscale=1.5, bbox_to_anchor=(1.05, 1), loc='upper left')
-
-ax = axes[1]
-for mode in uniq_modes:
-    idx = [i for i, m in enumerate(mode_labels) if m == mode]
-    if not idx:
-        continue
-    ax.scatter(X2[idx, 0], X2[idx, 1], s=6, alpha=0.8, c=mode_to_color.get(mode, '#999999'), label=('Cesarean' if mode == 'C' else 'Vaginal'))
-ax.set_title('PCA 2D — colored by delivery mode')
-ax.set_xlabel('PC1')
-ax.set_ylabel('PC2')
-ax.legend()
 plt.tight_layout()
 plt.show()
 
 
-#%% 3D scatter: colored by age and by delivery mode
-fig = plt.figure(figsize=(12, 5))
-ax1 = fig.add_subplot(1, 2, 1, projection='3d')
+#%% 3D scatter: colored by age
+fig = plt.figure(figsize=(6, 5))
+ax1 = fig.add_subplot(1, 1, 1, projection='3d')
 for age in uniq_ages:
     idx = [i for i, a in enumerate(age_labels) if a == age]
     if not idx:
         continue
     ax1.scatter(X3[idx, 0], X3[idx, 1], X3[idx, 2], s=4, alpha=0.7, c=[age_to_color[age]], label=age)
-ax1.set_title('PCA 3D — colored by age')
-ax1.set_xlabel('PC1')
-ax1.set_ylabel('PC2')
-ax1.set_zlabel('PC3')
+ax1.set_title('UMAP 3D — colored by age')
+ax1.set_xlabel('UMAP1')
+ax1.set_ylabel('UMAP2')
+ax1.set_zlabel('UMAP3')
 ax1.legend(markerscale=1.2, bbox_to_anchor=(1.05, 1), loc='upper left')
-
-ax2 = fig.add_subplot(1, 2, 2, projection='3d')
-for mode in uniq_modes:
-    idx = [i for i, m in enumerate(mode_labels) if m == mode]
-    if not idx:
-        continue
-    ax2.scatter(X3[idx, 0], X3[idx, 1], X3[idx, 2], s=4, alpha=0.7, c=mode_to_color.get(mode, '#999999'), label=('Cesarean' if mode == 'C' else 'Vaginal'))
-ax2.set_title('PCA 3D — colored by delivery mode')
-ax2.set_xlabel('PC1')
-ax2.set_ylabel('PC2')
-ax2.set_zlabel('PC3')
-ax2.legend()
 plt.tight_layout()
 plt.show()
-
 # %%

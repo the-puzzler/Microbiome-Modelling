@@ -128,6 +128,7 @@ def build_accession_to_srs_from_mapped(mapped_path=MAPPED_PATH):
 
 
 def load_microbiome_model(checkpoint_path=CHECKPOINT_PATH):
+    # Prefer CUDA, else CPU (disable MPS due to performance)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint['model_state_dict']

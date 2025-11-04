@@ -9,6 +9,7 @@ from matplotlib.colors import Normalize
 from sklearn.decomposition import PCA
 import h5py
 import random
+import torch
 
 import umap.umap_ as umap
 
@@ -178,9 +179,9 @@ for flag, marker in ((True, 'o'), (False, '^')):
     idx = np.where(is_original == flag)[0]
     if idx.size:
         ax.scatter(XY0[idx, 0], XY0[idx, 1], s=8, alpha=0.85, c=cmap(norm(final_logits[idx])), marker=marker, label=('original' if flag else 'added'))
-ax.set_title('Input DNA (UMAP2)')
-ax.set_xlabel('PC1')
-ax.set_ylabel('PC2')
+ax.set_title('Input DNA')
+ax.set_xlabel('UMAP1')
+ax.set_ylabel('UMAP2')
 ax.legend()
 
 # Subsequent subplots: each transformer layer output
@@ -192,17 +193,28 @@ for li, out in enumerate(layer_outputs, start=1):
         idx = np.where(is_original == flag)[0]
         if idx.size:
             ax.scatter(XY[idx, 0], XY[idx, 1], s=8, alpha=0.85, c=cmap(norm(final_logits[idx])), marker=marker)
-    ax.set_title(f'Layer {li} (UMAP2)')
-    ax.set_xlabel('PC1')
-    ax.set_ylabel('PC2')
+    ax.set_title(f'Layer {li}')
+    ax.set_xlabel('UMAP1')
+    ax.set_ylabel('UMAP')
 
 # Turn off any unused axes
 for pi in range(plots, nrows * ncols):
     r, c = divmod(pi, ncols)
     axes[r][c].axis('off')
 
-fig.suptitle(f'Gingivitis — per-layer OTU embeddings for {rand_srs}\nColor = final logit, marker: o=original, x=added', fontsize=12)
-plt.tight_layout(rect=(0, 0, 1, 0.95))
+# Add a shared colorbar to explain logit color mapping
+sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+sm.set_array([])
+
+# Reserve right margin for a dedicated colorbar axis
+plt.tight_layout(rect=(0, 0, 0.92, 0.95))
+
+# Dedicated colorbar axis: [left, bottom, width, height] in figure coords
+cax = fig.add_axes([0.935, 0.15, 0.02, 0.7])
+cbar = fig.colorbar(sm, cax=cax)
+cbar.set_label('Final logit')
+
+#fig.suptitle(f'Gingivitis — per-layer OTU embeddings for {rand_srs}\nColor = final logit, marker: o=original, x=added', fontsize=12)
 plt.show()
 
 # %%
