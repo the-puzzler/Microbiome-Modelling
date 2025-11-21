@@ -6,7 +6,6 @@ import csv
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from scipy.stats import fisher_exact
 
 # Ensure project root on sys.path so `from scripts import utils` works
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -27,7 +26,6 @@ from scripts import utils as shared_utils  # noqa: E402
 IN_TSV = 'data/ood_text_pred/average_otu_logits.tsv'
 OUT_TSV = 'data/ood_text_pred/term_stats.tsv'
 OUT_PNG = 'data/ood_text_pred/term_means_top_bottom.png'
-OUT_ENRICH_TSV = 'data/ood_text_pred/term_enrichment_fisher.tsv'
 # Minimum number of SRS occurrences required for a term to be included
 MIN_OCCURRENCES = 10
 
@@ -47,7 +45,6 @@ if not os.path.exists(IN_TSV):
 from collections import defaultdict
 
 term_values = defaultdict(list)
-sample_scores = {}
 kept_rows = 0
 skipped_no_terms = 0
 with open(IN_TSV, 'r') as f:
@@ -64,7 +61,6 @@ with open(IN_TSV, 'r') as f:
             continue
         for t in terms:
             term_values[t].append(avg_logit)
-        sample_scores[srs] = avg_logit
         kept_rows += 1
 
 print('Rows used:', kept_rows, '| SRS without terms:', skipped_no_terms, '| unique terms:', len(term_values))
