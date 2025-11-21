@@ -67,11 +67,15 @@ def build_sample_embeddings(
     txt_emb=shared_utils.TXT_EMB,
 ):
     rename_map = None
+    resolver = None
     try:
         if os.path.exists(shared_utils.RENAME_MAP_PATH):
             rename_map = shared_utils.load_otu_rename_map(shared_utils.RENAME_MAP_PATH)
+            # Gingiva is bacterial; prefer B keys when both A/B exist
+            resolver = shared_utils.build_otu_key_resolver(micro_to_otus, rename_map, shared_utils.PROKBERT_PATH, prefer='B')
     except Exception:
         rename_map = None
+        resolver = None
     return shared_utils.build_sample_embeddings(
         micro_to_otus,
         model,
@@ -79,7 +83,7 @@ def build_sample_embeddings(
         prokbert_path=prokbert_path,
         txt_emb=txt_emb,
         rename_map=rename_map,
-        map_direction='new_to_old',
+        resolver=resolver,
     )
 
 

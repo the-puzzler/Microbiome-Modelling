@@ -17,3 +17,10 @@ still, i will need to try perturbations on text to see if there any benefits.
 
 
 adding perturbations onto text didnt seem to help
+
+
+okay so new black sucked much more on snowmelt -> about 0.05 auc lost... its train loss seemed quite high?
+mabye jsut a bad run... so i have re-started training and will train for 2 epochs to make sure train loss
+has time to come down. I will also check how it does after 1 epoch. its train loss was 0.3 ish
+so if in this new black new run it is lower after 1 epoch, it was just unclucky... i cant immmaigne removing diabbimmune
+would have made a big difference.

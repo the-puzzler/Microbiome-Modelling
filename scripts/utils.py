@@ -19,7 +19,7 @@ from model import MicrobiomeTransformer
 # Default paths shared across tasks
 MICROBEATLAS_SAMPLES = 'data/diabimmune/microbeatlas_samples.tsv'
 MAPPED_PATH = 'data/microbeatlas/samples-otus.97.mapped'
-CHECKPOINT_PATH = 'data/model/checkpoint_epoch_0_final_conf02.pt'
+CHECKPOINT_PATH = 'data/model/checkpoint_epoch_0_final_newblack_2epoch.pt'
 PROKBERT_PATH = 'data/model/prokbert_embeddings.h5'
 RENAME_MAP_PATH = 'data/microbeatlas/otus.rename.map1'
 
@@ -580,3 +580,195 @@ def union_average_logits(per_sample_dicts):
         if vals:
             out[oid] = float(sum(vals) / len(vals))
     return out
+
+
+# ==== Shared helpers for baselines (presence matrices, multilabel pairs, evaluation) ====
+
+def union_presence(srs_list, micro_to_otus):
+    """
+    Union OTUs across a list of SRS IDs.
+    Returns a set of OTU ids.
+    """
+    seen = set()
+    for srs in srs_list:
+        for otu in micro_to_otus.get(srs, []):
+            seen.add(otu)
+    return seen
+
+
+def build_presence_matrix(group_to_srs, micro_to_otus, min_prevalence=10):
+    """
+    Build a binary presence/absence matrix X over groups from SRS→OTUs mapping.
+
+    Args:
+        group_to_srs: dict key(any hashable)->list[SRS]
+        micro_to_otus: dict SRS->list[OTU]
+        min_prevalence: keep OTUs observed in at least this many groups
+
+    Returns:
+        X: np.ndarray [n_groups, n_otus]
+        kept_otus: list[str]
+        otu_index: dict OTU->col
+        keys: list of group keys in row order
+        presence_by_key: dict key->set[OTU]
+        key_to_row: dict key->row index in X
+    """
+    from collections import Counter
+    import numpy as _np
+
+    presence_by_key = {k: union_presence(srs_list, micro_to_otus) for k, srs_list in group_to_srs.items()}
+    prev = Counter()
+    for pres in presence_by_key.values():
+        prev.update(pres)
+    kept_otus = sorted([otu for otu, c in prev.items() if c >= min_prevalence])
+    otu_index = {otu: i for i, otu in enumerate(kept_otus)}
+
+    keys = sorted(presence_by_key.keys())
+    X = _np.zeros((len(keys), len(kept_otus)), dtype=_np.float32)
+    for i, key in enumerate(keys):
+        for otu in presence_by_key[key]:
+            j = otu_index.get(otu)
+            if j is not None:
+                X[i, j] = 1.0
+    key_to_row = {k: i for i, k in enumerate(keys)}
+    return X, kept_otus, otu_index, keys, presence_by_key, key_to_row
+
+
+def build_multilabel_pairs(keys, presence_by_key, kept_otus, key_to_row, mode, group_id_func):
+    """
+    Build masked multilabel targets for t1->t2 transitions within groups.
+
+    Args:
+        keys: list of group keys (rows correspond to these in X)
+        presence_by_key: dict key->set[OTU]
+        kept_otus: list of OTU column ids
+        key_to_row: dict key->row index
+        mode: 'dropout' or 'colonisation'
+        group_id_func: callable(key)->group id (e.g., subject or (block,treatment))
+
+    Returns:
+        X_rows: list[int] row indices pointing into X
+        Y_ml: np.ndarray [n_pairs, n_otus]
+        M_ml: np.ndarray [n_pairs, n_otus] (bool mask of eligible positions)
+        groups: np.ndarray [n_pairs] of group ids for CV grouping
+    """
+    import numpy as _np
+    from collections import defaultdict as _dd
+
+    assert mode in {"dropout", "colonisation"}
+    by_group = _dd(list)
+    for k in keys:
+        by_group[group_id_func(k)].append(k)
+
+    X_rows, Y_rows, M_rows, groups = [], [], [], []
+    for gid, klist in by_group.items():
+        for i in range(len(klist)):
+            for j in range(len(klist)):
+                if i == j:
+                    continue
+                k1, k2 = klist[i], klist[j]
+                pres1 = presence_by_key.get(k1, set())
+                pres2 = presence_by_key.get(k2, set())
+                yrow = _np.zeros(len(kept_otus), dtype=_np.int64)
+                mrow = _np.zeros(len(kept_otus), dtype=bool)
+                for idx, otu in enumerate(kept_otus):
+                    if mode == 'dropout':
+                        if otu in pres1:
+                            mrow[idx] = True
+                            yrow[idx] = 1 if otu not in pres2 else 0
+                    else:  # colonisation
+                        if otu not in pres1:
+                            mrow[idx] = True
+                            yrow[idx] = 1 if otu in pres2 else 0
+                X_rows.append(key_to_row[k1])
+                Y_rows.append(yrow)
+                M_rows.append(mrow)
+                groups.append(gid)
+
+    if not X_rows:
+        return _np.array([], dtype=_np.int64), _np.zeros((0, len(kept_otus)), dtype=_np.int64), _np.zeros((0, len(kept_otus)), dtype=bool), _np.array([], dtype=object)
+
+    X_rows = _np.array(X_rows, dtype=_np.int64)
+    Y_ml = _np.stack(Y_rows)
+    M_ml = _np.stack(M_rows)
+    groups = _np.array(groups, dtype=object)
+    return X_rows, Y_ml, M_ml, groups
+
+
+def eval_masked_ovr(name, base_estimator, X_ml, Y_ml, M_ml, groups_ml, n_splits=5, seed=42):
+    """
+    Grouped K-fold evaluation with masked per-label AUC.
+    Evaluates only eligible positions per label on test fold.
+    Prints per-fold results and overall mean±std of valid folds.
+    """
+    import numpy as _np
+    import math as _math
+    from sklearn.model_selection import GroupKFold
+    from sklearn.multiclass import OneVsRestClassifier
+    from sklearn.metrics import roc_auc_score
+    # Encode arbitrary group identifiers (e.g., tuples, strings, small arrays) into
+    # integer labels to avoid numpy trying to sort heterogeneous Python objects
+    # (which can raise TypeError inside GroupKFold).
+    group_ids = []
+    mapping = {}
+    for g in groups_ml:
+        key = g
+        try:
+            hash(key)
+        except TypeError:
+            # Convert unhashable objects (like numpy arrays) to a tuple of values
+            key = tuple(_np.asarray(g).ravel().tolist())
+        if key not in mapping:
+            mapping[key] = len(mapping)
+        group_ids.append(mapping[key])
+    groups_arr = _np.asarray(group_ids, dtype=_np.int64)
+
+    gkf = GroupKFold(n_splits=n_splits)
+    fold_aucs = []
+    total_labels = Y_ml.shape[1]
+    for fold, (tr_idx, te_idx) in enumerate(gkf.split(X_ml, groups=groups_arr), 1):
+        tr_mask = _np.zeros(X_ml.shape[0], dtype=bool); tr_mask[tr_idx] = True
+        te_mask = _np.zeros(X_ml.shape[0], dtype=bool); te_mask[te_idx] = True
+
+        # Diagnostics (train)
+        no_train_examples = 0
+        single_class_train = 0
+        for j in range(total_labels):
+            elig = M_ml[tr_mask, j]
+            if not _np.any(elig):
+                no_train_examples += 1
+                continue
+            y_tr = Y_ml[tr_mask, j][elig]
+            if _np.unique(y_tr).size < 2:
+                single_class_train += 1
+
+        clf = OneVsRestClassifier(base_estimator)
+        clf.fit(X_ml[tr_mask], Y_ml[tr_mask])
+        prob = clf.predict_proba(X_ml[te_mask])
+
+        per_label = []
+        for j in range(total_labels):
+            mask = M_ml[te_mask, j]
+            if not _np.any(mask):
+                continue
+            y_true = Y_ml[te_mask, j][mask]
+            if _np.unique(y_true).size < 2:
+                continue
+            try:
+                per_label.append(float(roc_auc_score(y_true, prob[:, j][mask])))
+            except Exception:
+                pass
+
+        fold_auc = float(_np.mean(per_label)) if per_label else float("nan")
+        fold_aucs.append(fold_auc)
+        print(f"[{name}] Fold {fold}: macro AUC={fold_auc:.3f} over {len(per_label)} evaluable labels")
+        print(f"[{name}] Label diagnostics (train): no-train-examples={no_train_examples}/{total_labels}, "
+              f"single-class={single_class_train}/{total_labels}")
+
+    valid = [a for a in fold_aucs if not (_math.isnan(a) or _math.isinf(a))]
+    if valid:
+        mean_auc = _np.mean(valid)
+        std_auc = _np.std(valid)
+        print(f"[{name}] Grouped {n_splits}-fold macro AUC: {mean_auc:.3f} ± {std_auc:.3f}")
+    else:
+        print(f"[{name}] No evaluable labels across CV folds.")

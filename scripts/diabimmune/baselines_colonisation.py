@@ -1,5 +1,5 @@
 """
-DIABIMMUNE: Multilabel Dropout (t1 -> t2) using binary taxa presence, matching the
+DIABIMMUNE: Multilabel Colonisation (t1 -> t2) using binary taxa presence, matching the
 gingivitis/snowmelt baseline structure with grouped 5-fold CV by subject.
 """
 
@@ -90,13 +90,13 @@ X, kept_otus, otu_index, keys, st_presence, key_to_row = shared_utils.build_pres
 )
 
 
-#%% Build multilabel dropout dataset: all t1->t2 pairs within subject (t1 != t2)
+#%% Build multilabel colonisation dataset: all t1->t2 pairs within subject (t1 != t2)
 X_rows, Y_ml, M_ml, groups_ml = shared_utils.build_multilabel_pairs(
     keys=keys,
     presence_by_key=st_presence,
     kept_otus=kept_otus,
     key_to_row=key_to_row,
-    mode='dropout',
+    mode='colonisation',
     group_id_func=lambda k: k[0],  # subject
 )
 
@@ -104,7 +104,7 @@ if X_rows.size == 0:
     print('No t1->t2 pairs available.')
 else:
     X_ml = X[X_rows]
-    print(f"Multilabel dropout: n={len(X_ml)}, d={X_ml.shape[1]}, labels={Y_ml.shape[1]}")
+    print(f"Multilabel colonisation: n={len(X_ml)}, d={X_ml.shape[1]}, labels={Y_ml.shape[1]}")
 
     # Single random split (not grouped) diagnostic
     rng = np.random.default_rng(SEED)
@@ -165,7 +165,7 @@ rf_est = RandomForestClassifier(
 )
 
 # ---- Grouped 5-fold CV by subject ----
-shared_utils.eval_masked_ovr("LogReg (OvR) — Dropout", lr_est, X_ml, Y_ml, M_ml, groups_ml, n_splits=5, seed=SEED)
-shared_utils.eval_masked_ovr("RandForest (OvR) — Dropout", rf_est, X_ml, Y_ml, M_ml, groups_ml, n_splits=5, seed=SEED)
+shared_utils.eval_masked_ovr("LogReg (OvR) — Colonisation", lr_est, X_ml, Y_ml, M_ml, groups_ml, n_splits=5, seed=SEED)
+shared_utils.eval_masked_ovr("RandForest (OvR) — Colonisation", rf_est, X_ml, Y_ml, M_ml, groups_ml, n_splits=5, seed=SEED)
 
 # %%

@@ -10,12 +10,12 @@ Single task (clean baseline):
 
 #%% Imports & config
 import os, sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 import numpy as np
 
-from sklearn.model_selection import GroupKFold
 from sklearn.metrics import roc_auc_score
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.multiclass import OneVsRestClassifier
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -43,66 +43,26 @@ for run, meta in run_meta.items():
 needed_srs = {s for lst in bt_time_to_srs.values() for s in lst}
 micro_to_otus = shared_utils.collect_micro_to_otus_mapped(needed_srs, shared_utils.MAPPED_PATH)
 
-def union_presence(srs_list):
-    seen = set()
-    for srs in srs_list:
-        for otu in micro_to_otus.get(srs, []):
-            seen.add(otu)
-    return seen
-
-bt_presence = {k: union_presence(v) for k, v in bt_time_to_srs.items()}
-
-prev = Counter()
-for pres in bt_presence.values():
-    prev.update(pres)
-kept_otus = sorted([o for o, c in prev.items() if c >= MIN_PREVALENCE])
-otu_index = {o: i for i, o in enumerate(kept_otus)}
-
-keys = sorted(bt_presence.keys())
-X = np.zeros((len(keys), len(kept_otus)), dtype=np.float32)
-for i, key in enumerate(keys):
-    for otu in bt_presence[key]:
-        j = otu_index.get(otu)
-        if j is not None:
-            X[i, j] = 1.0
+group_to_srs = {k: v for k, v in bt_time_to_srs.items()}
+X, kept_otus, otu_index, keys, bt_presence, key_to_row = shared_utils.build_presence_matrix(
+    group_to_srs, micro_to_otus, min_prevalence=MIN_PREVALENCE
+)
 
 
 #%% Build multilabel colonisation dataset: all t1->t2 pairs within (block, treatment)
-key_to_row = {k: i for i, k in enumerate(keys)}
-bt_to_times = defaultdict(list)
-for (b, tr, t) in keys:
-    bt_to_times[(b, tr)].append(t)
+X_rows, Y_ml, M_ml, groups_ml = shared_utils.build_multilabel_pairs(
+    keys=keys,
+    presence_by_key=bt_presence,
+    kept_otus=kept_otus,
+    key_to_row=key_to_row,
+    mode='colonisation',
+    group_id_func=lambda k: (k[0], k[1]),  # (block, treatment)
+)
 
-X_pairs, Y_pairs, M_pairs, groups_pairs = [], [], [], []
-for (b, tr), times in bt_to_times.items():
-    for i in range(len(times)):
-        for j in range(len(times)):
-            if i == j:
-                continue
-            t1, t2 = times[i], times[j]
-            k1 = (b, tr, t1)
-            k2 = (b, tr, t2)
-            row = key_to_row[k1]
-            pres1 = bt_presence.get(k1, set())
-            pres2 = bt_presence.get(k2, set())
-            yrow = np.zeros(len(kept_otus), dtype=np.int64)
-            mrow = np.zeros(len(kept_otus), dtype=bool)
-            for idx, otu in enumerate(kept_otus):
-                if otu not in pres1:  # absent at t1 → eligible for colonisation
-                    mrow[idx] = True
-                    yrow[idx] = 1 if otu in pres2 else 0
-            X_pairs.append(row)
-            Y_pairs.append(yrow)
-            M_pairs.append(mrow)
-            groups_pairs.append(f"{b}|{tr}")
-
-if not X_pairs:
+if X_rows.size == 0:
     print('No t1->t2 pairs available.')
 else:
-    X_ml = X[np.array(X_pairs, dtype=np.int64)]
-    Y_ml = np.stack(Y_pairs)
-    M_ml = np.stack(M_pairs)
-    groups_ml = np.array(groups_pairs, dtype=object)
+    X_ml = X[X_rows]
     print(f"Multilabel colonisation: n={len(X_ml)}, d={X_ml.shape[1]}, labels={Y_ml.shape[1]}")
 
     # Single random split (not grouped) for symmetry
@@ -149,3 +109,25 @@ else:
         print(f"Label diagnostics (train): no-train-examples={no_train_examples}/{total_labels}, single-class={single_class_train}/{total_labels}")
     else:
         print('No evaluable labels in the test split (all single-class after masking).')
+
+
+#%% Grouped 5-fold CV by (block, treatment)
+lr_est = LogisticRegression(
+    max_iter=2000, solver='lbfgs', class_weight='balanced', random_state=SEED
+)
+
+rf_est = RandomForestClassifier(
+    n_estimators=500,
+    max_depth=None,
+    min_samples_split=2,
+    min_samples_leaf=1,
+    n_jobs=-1,
+    random_state=SEED
+)
+
+shared_utils.eval_masked_ovr(
+    "LogReg (OvR)", lr_est, X_ml, Y_ml, M_ml, groups_ml, n_splits=5, seed=SEED
+)
+shared_utils.eval_masked_ovr(
+    "RandForest (OvR)", rf_est, X_ml, Y_ml, M_ml, groups_ml, n_splits=5, seed=SEED
+)

@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-#%% Imports and setup
+"""
+DIABIMMUNE: OTU colonisation prediction (T1 -> T2)
+
+Parallels gingivitis/snowmelt colonisation experiments:
+- Group by subject and time (age_at_collection)
+- Identify colonizer OTUs (present at T2 but absent at T1) and non-colonizers
+- For each example, augment T1 inputs with the target OTU and score with the
+  pretrained model (no task-specific training)
+- Evaluate ROC AUC/AP for distinguishing colonizers vs non-colonizers, with
+  and without text tokens, and visualize
+"""
+
 import os
 import sys
+import csv
 from collections import defaultdict
 import random
 
-import csv
 import h5py
 import numpy as np
-import torch
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve
 
@@ -18,32 +28,69 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from scripts import utils as shared_utils  # noqa: E402
-from scripts.snowmelt.utils import load_snowmelt_metadata  # noqa: E402
-from scripts.gingivitis.utils import plot_colonisation_summary  # standardized plot  # noqa: E402
+from scripts.diabimmune.utils import (
+    load_run_data,
+)  # noqa: E402
+from scripts.gingivitis.utils import plot_colonisation_summary  # noqa: E402
 
 
 #%% Parameters
-N_COLONIZER_SAMPLES = 50000
-N_NON_COLONIZER_SAMPLES = 50000
+N_COLONIZER_SAMPLES = 20000
+N_NON_COLONIZER_SAMPLES = 20000
 
 
-#%% Load snowmelt runs and group by (block, treatment, time)
-run_meta, run_to_srs = load_snowmelt_metadata('data/snowmelt/snowmelt.csv')
-print('parsed runs with metadata:', len(run_meta))
+#%% Load DIABIMMUNE mappings: runs -> SRS, SRS -> subject/sample
+run_rows, SRA_to_micro, gid_to_sample, micro_to_subject, micro_to_sample = load_run_data()
+print('DIABIMMUNE runs:', len(run_rows), '| mapped to SRS:', len(SRA_to_micro))
 
-bt_time_to_srs = defaultdict(list)
-for run, meta in run_meta.items():
-    srs = run_to_srs.get(run)
-    if not srs:
+
+#%% Parse samples.csv to get age_at_collection per sampleID
+samples_csv = 'data/diabimmune/samples.csv'
+samples_table = {}
+with open(samples_csv) as f:
+    header = None
+    for line in f:
+        parts = line.strip().split(',')
+        if not parts:
+            continue
+        if header is None:
+            header = parts
+            header[0] = header[0].lstrip('\ufeff')
+            continue
+        row = dict(zip(header, parts))
+        samples_table[row['sampleID']] = row
+print('loaded samples records:', len(samples_table))
+
+
+#%% Build grouping: (subject, age) -> list of SRS mapped to that sample/time
+def safe_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
+subject_time_to_srs = defaultdict(list)
+subjects = set()
+for srs, info in micro_to_sample.items():
+    subject = info.get('subject')
+    sample_id = info.get('sample')
+    if not subject or not sample_id:
         continue
-    key = (meta['block'], meta['treatment'], meta['time'])
-    bt_time_to_srs[key].append(srs)
-print('group keys (block,treatment,time):', len(bt_time_to_srs))
+    rec = samples_table.get(sample_id, {})
+    age = safe_float(rec.get('age_at_collection', ''))
+    if age is None:
+        continue
+    subject_time_to_srs[(subject, age)].append(srs)
+    subjects.add(subject)
+
+print('subjects with age-resolved samples:', len(subjects))
+print('subject-time groups:', len(subject_time_to_srs))
 
 
 #%% Collect SRS -> OTUs via mapped MicrobeAtlas file
 needed_srs = set()
-for srs_list in bt_time_to_srs.values():
+for srs_list in subject_time_to_srs.values():
     needed_srs.update(srs_list)
 micro_to_otus = shared_utils.collect_micro_to_otus_mapped(needed_srs, shared_utils.MAPPED_PATH)
 print('SRS with OTUs:', len(micro_to_otus))
@@ -58,34 +105,28 @@ resolver = shared_utils.build_otu_key_resolver(micro_to_otus, rename_map, shared
 #%% Load text embeddings + RunID->terms mapping and build SRS->terms via headers
 term_to_vec = shared_utils.load_term_embeddings()
 run_to_terms = shared_utils.parse_run_terms()
-srs_to_terms = shared_utils.build_srs_terms(run_to_srs, run_to_terms, shared_utils.MAPPED_PATH)
+srs_to_terms = shared_utils.build_srs_terms(SRA_to_micro, run_to_terms, shared_utils.MAPPED_PATH)
 
 
-#%% Utilities
-def time_order_key(t):
-    order = {'A': 0, 'B': 1, 'C': 2}
-    return order.get(t, 99)
-
-
-#%% Collect colonizer examples (OTUs present at t2 but absent at t1) across (block,treatment)
+#%% Collect colonizer examples (OTUs present at t2 but absent at t1)
 print('Finding colonizer examples...')
-bt_to_times = defaultdict(set)
-for (block, trt, time) in bt_time_to_srs.keys():
-    bt_to_times[(block, trt)].add(time)
+timepoints_by_subject = defaultdict(dict)
+for (subj, age), srs_list in subject_time_to_srs.items():
+    timepoints_by_subject[subj][age] = srs_list
 
 all_colonizer_examples = []
-for (block, trt), times_set in tqdm(bt_to_times.items(), desc='(block,treatment) pairs'):
-    times_sorted = sorted(times_set, key=time_order_key)
-    if len(times_sorted) < 2:
+for subject, timepoints in tqdm(timepoints_by_subject.items(), desc='Subjects'):
+    ages = list(timepoints.keys())
+    if len(ages) < 2:
         continue
-    for i in range(len(times_sorted)):
-        for j in range(len(times_sorted)):
+    for i in range(len(ages)):
+        for j in range(len(ages)):
             if i == j:
                 continue
-            t1 = times_sorted[i]
-            t2 = times_sorted[j]
-            srs_t1 = bt_time_to_srs.get((block, trt, t1), [])
-            srs_t2 = bt_time_to_srs.get((block, trt, t2), [])
+            t1 = ages[i]
+            t2 = ages[j]
+            srs_t1 = timepoints[t1]
+            srs_t2 = timepoints[t2]
             # Union OTUs at T1 and T2
             otus_t1 = set()
             for srs in srs_t1:
@@ -96,8 +137,7 @@ for (block, trt), times_set in tqdm(bt_to_times.items(), desc='(block,treatment)
             colonizers = otus_t2 - otus_t1
             for target in colonizers:
                 all_colonizer_examples.append({
-                    'block': block,
-                    'treatment': trt,
+                    'subject': subject,
                     't1': t1,
                     't2': t2,
                     'srs_t1': list(srs_t1),
@@ -125,9 +165,11 @@ sampled_non_colonizers = []
 for ex in tqdm(sampled_colonizers, desc='Sampling non-colonizers'):
     if len(sampled_non_colonizers) >= N_NON_COLONIZER_SAMPLES:
         break
-    block, trt, t1, t2 = ex['block'], ex['treatment'], ex['t1'], ex['t2']
-    srs_t1 = bt_time_to_srs.get((block, trt, t1), [])
-    srs_t2 = bt_time_to_srs.get((block, trt, t2), [])
+    subject = ex['subject']
+    t1 = ex['t1']
+    t2 = ex['t2']
+    srs_t1 = timepoints_by_subject[subject][t1]
+    srs_t2 = timepoints_by_subject[subject][t2]
     otus_t1 = set()
     for srs in srs_t1:
         otus_t1.update(micro_to_otus.get(srs, []))
@@ -139,8 +181,7 @@ for ex in tqdm(sampled_colonizers, desc='Sampling non-colonizers'):
         continue
     target = random.choice(absent_both)
     sampled_non_colonizers.append({
-        'block': block,
-        'treatment': trt,
+        'subject': subject,
         't1': t1,
         't2': t2,
         'srs_t1': list(srs_t1),
@@ -165,7 +206,7 @@ with h5py.File(shared_utils.PROKBERT_PATH) as emb_file:
         srs_t1 = ex['srs_t1']
         target = ex['target_otu']
         per_sample_scores = []
-        per_sample_scores_text = []
+        per_sample_scores_txt = []
         for srs in srs_t1:
             base_otus = micro_to_otus.get(srs, [])
             aug_otus = list(base_otus)
@@ -193,12 +234,12 @@ with h5py.File(shared_utils.PROKBERT_PATH) as emb_file:
                 srs_to_terms=srs_to_terms,
             )
             if target in logits_map_txt:
-                per_sample_scores_text.append(logits_map_txt[target])
+                per_sample_scores_txt.append(logits_map_txt[target])
         if per_sample_scores:
             target_scores.append(float(np.mean(per_sample_scores)))
             target_labels.append(1 if ex['is_colonizer'] else 0)
-        if per_sample_scores_text:
-            target_scores_txt.append(float(np.mean(per_sample_scores_text)))
+        if per_sample_scores_txt:
+            target_scores_txt.append(float(np.mean(per_sample_scores_txt)))
 
 print('Scored examples (baseline/text):', len(target_scores), '/', len(target_scores_txt))
 
@@ -207,6 +248,7 @@ print('Scored examples (baseline/text):', len(target_scores), '/', len(target_sc
 y = np.array(target_labels, dtype=np.int64)
 logits = np.array(target_scores, dtype=np.float32)
 probs = 1 / (1 + np.exp(-logits))
+
 logits_txt = np.array(target_scores_txt, dtype=np.float32)
 probs_txt = 1 / (1 + np.exp(-logits_txt)) if logits_txt.size else np.array([])
 
@@ -223,7 +265,7 @@ else:
 
 
 #%% Visualize
-plot_colonisation_summary(logits, y, title_prefix='Snowmelt Colonisation')
+plot_colonisation_summary(logits, y, title_prefix='DIABIMMUNE Colonisation')
 if probs_txt.size:
     fpr_b, tpr_b, _ = roc_curve(y, probs)
     fpr_t, tpr_t, _ = roc_curve(y, probs_txt)
@@ -234,7 +276,7 @@ if probs_txt.size:
     plt.plot([0, 1], [0, 1], 'k--', linewidth=1)
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
-    plt.title('Snowmelt Colonisation ROC')
+    plt.title('DIABIMMUNE Colonisation ROC')
     plt.legend(loc='lower right')
     plt.tight_layout()
     plt.show()
