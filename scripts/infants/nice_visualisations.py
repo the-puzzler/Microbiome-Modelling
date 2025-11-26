@@ -54,6 +54,7 @@ def parse_env_label(label: str):
 X_list = []
 age_labels = []
 mode_labels = []
+sample_ids = []
 kept = 0
 for sid, label in meta.items():
     emb = sample_embeddings.get(sid)
@@ -63,11 +64,23 @@ for sid, label in meta.items():
     X_list.append(emb.numpy())
     age_labels.append(age)
     mode_labels.append(mode)
+    sample_ids.append(sid)
     kept += 1
 
 print('usable samples for viz:', kept)
 if kept == 0:
     raise SystemExit('No usable samples for visualisation.')
+
+# Build presence/absence matrix: samples x OTUs (0/1)
+all_otus = sorted({otu for sid in sample_ids for otu in sample_to_otus.get(sid, [])})
+print('unique OTUs across usable samples:', len(all_otus))
+otu_to_idx = {otu: i for i, otu in enumerate(all_otus)}
+presence_X = np.zeros((kept, len(all_otus)), dtype=np.float32)
+for row_idx, sid in enumerate(sample_ids):
+    for otu in sample_to_otus.get(sid, []):
+        col_idx = otu_to_idx.get(otu)
+        if col_idx is not None:
+            presence_X[row_idx, col_idx] = 1.0
 
 X = np.stack(X_list)
 
@@ -81,7 +94,7 @@ X3 = X_umap[:, :3]
 
 #%% Helper for coloring and ordering
 def age_sort_key(val: str):
-    order = {'B': 0, 'M': 1, '4M': 2, '12M': 3, '3Y': 4, '5Y': 5}
+    order = {'B': 0, '4M': 1, '12M': 2, '3Y': 3, '5Y': 4, 'M': 5}
     return order.get(val, 999)
 
 uniq_ages = sorted(sorted(set(age_labels)), key=age_sort_key)
@@ -119,6 +132,105 @@ ax1.set_xlabel('UMAP1')
 ax1.set_ylabel('UMAP2')
 ax1.set_zlabel('UMAP3')
 ax1.legend(markerscale=1.2, bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+
+#%% 2D scatter: colored by delivery mode (C vs V)
+fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+for mode in uniq_modes:
+    idx = [i for i, m in enumerate(mode_labels) if m == mode]
+    if not idx:
+        continue
+    ax.scatter(X2[idx, 0], X2[idx, 1], s=6, alpha=0.8, c=[mode_to_color[mode]], label=mode)
+ax.set_xlabel('UMAP1')
+ax.set_ylabel('UMAP2')
+ax.legend(title='Mode', markerscale=1.5, bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+
+#%% 3D scatter: colored by delivery mode (C vs V)
+fig = plt.figure(figsize=(6, 5))
+ax1 = fig.add_subplot(1, 1, 1, projection='3d')
+for mode in uniq_modes:
+    idx = [i for i, m in enumerate(mode_labels) if m == mode]
+    if not idx:
+        continue
+    ax1.scatter(X3[idx, 0], X3[idx, 1], X3[idx, 2], s=4, alpha=0.7, c=[mode_to_color[mode]], label=mode)
+ax1.set_title('UMAP 3D — colored by delivery mode')
+ax1.set_xlabel('UMAP1')
+ax1.set_ylabel('UMAP2')
+ax1.set_zlabel('UMAP3')
+ax1.legend(title='Mode', markerscale=1.2, bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+
+#%% 2D UMAP on presence/absence OTU vectors (colored by age)
+reducer_pa_2d = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=43)
+X_pa_2d = reducer_pa_2d.fit_transform(presence_X)
+
+fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+for age in uniq_ages:
+    idx = [i for i, a in enumerate(age_labels) if a == age]
+    if not idx:
+        continue
+    ax.scatter(X_pa_2d[idx, 0], X_pa_2d[idx, 1], s=6, alpha=0.8, c=[age_to_color[age]], label=age)
+ax.set_xlabel('UMAP1')
+ax.set_ylabel('UMAP2')
+ax.legend(markerscale=1.5, bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+
+#%% 3D UMAP on presence/absence OTU vectors (colored by age)
+reducer_pa_3d = umap.UMAP(n_components=3, n_neighbors=15, min_dist=0.1, random_state=43)
+X_pa_3d = reducer_pa_3d.fit_transform(presence_X)
+
+fig = plt.figure(figsize=(6, 5))
+ax1 = fig.add_subplot(1, 1, 1, projection='3d')
+for age in uniq_ages:
+    idx = [i for i, a in enumerate(age_labels) if a == age]
+    if not idx:
+        continue
+    ax1.scatter(X_pa_3d[idx, 0], X_pa_3d[idx, 1], X_pa_3d[idx, 2], s=4, alpha=0.7, c=[age_to_color[age]], label=age)
+ax1.set_title('UMAP 3D — presence/absence (age)')
+ax1.set_xlabel('UMAP1')
+ax1.set_ylabel('UMAP2')
+ax1.set_zlabel('UMAP3')
+ax1.legend(markerscale=1.2, bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+
+#%% 2D UMAP on presence/absence OTU vectors (colored by delivery mode C vs V)
+fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+for mode in uniq_modes:
+    idx = [i for i, m in enumerate(mode_labels) if m == mode]
+    if not idx:
+        continue
+    ax.scatter(X_pa_2d[idx, 0], X_pa_2d[idx, 1], s=6, alpha=0.8, c=[mode_to_color[mode]], label=mode)
+ax.set_xlabel('UMAP1')
+ax.set_ylabel('UMAP2')
+ax.legend(title='Mode', markerscale=1.5, bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+
+#%% 3D UMAP on presence/absence OTU vectors (colored by delivery mode C vs V)
+fig = plt.figure(figsize=(6, 5))
+ax1 = fig.add_subplot(1, 1, 1, projection='3d')
+for mode in uniq_modes:
+    idx = [i for i, m in enumerate(mode_labels) if m == mode]
+    if not idx:
+        continue
+    ax1.scatter(X_pa_3d[idx, 0], X_pa_3d[idx, 1], X_pa_3d[idx, 2], s=4, alpha=0.7, c=[mode_to_color[mode]], label=mode)
+ax1.set_title('UMAP 3D — presence/absence (delivery mode)')
+ax1.set_xlabel('UMAP1')
+ax1.set_ylabel('UMAP2')
+ax1.set_zlabel('UMAP3')
+ax1.legend(title='Mode', markerscale=1.2, bbox_to_anchor=(1.05, 1), loc='upper left')
 plt.tight_layout()
 plt.show()
 # %%
