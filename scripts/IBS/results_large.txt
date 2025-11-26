@@ -1,0 +1,20 @@
+Loaded IBS metadata records (filtered): 7915
+Runs mapped to SRS: 7915 of 7915
+otus (mapped) for 7915 samples
+example ERS1052693 otus: ['97_12037', '97_3428', '97_4234', '97_1951', '97_5854']
+SRS with OTUs for IBS: 7915
+model ready on cpu
+OTU key resolver: 9776/9936 mapped (98.4%), both=0, misses=160, prefer=B
+sample embeddings ready: 7915
+missing otu embeddings: 1658
+example sample embedding ERS1052693 tensor([-0.7911, -1.0256, -0.8378,  0.8413, -0.9566])
+IBS SRS embeddings: 7915
+USA: 5318 samples (pos=586, neg=4732)
+United Kingdom: 2294 samples (pos=482, neg=1812)
+Australia: 303 samples (pos=51, neg=252)
+
+Cross-country mean AUC (source rows → target columns):
+Countries: ['Australia', 'USA', 'United Kingdom']
+[[0.52405372 0.51962392 0.49576635]
+ [0.57475879 0.64190797 0.5938886 ]
+ [0.49554933 0.59942826 0.5975864 ]]
