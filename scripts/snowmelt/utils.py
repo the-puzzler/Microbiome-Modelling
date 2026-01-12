@@ -21,15 +21,19 @@ def parse_isolate_field(val: str):
                 block = None
         elif lp.endswith('sampling') and len(p) >= 1:
             time = p[0].upper()  # A/B/C
-        elif lp in ('iceencasement', 'ambient', 'noice', 'nosnow', 'comp', 'compaction', 'compacted'):
+        elif lp in (
+            'iceencasement',
+            'ambient',
+            'noice',
+            'nosnow',
+            'compactedsnow',
+        ):
             treatment = {
                 'iceencasement': 'IE',
                 'ambient': 'AMB',
                 'noice': 'NoICE',
                 'nosnow': 'NoSNOW',
-                'comp': 'COMP',
-                'compaction': 'COMP',
-                'compacted': 'COMP'
+                'compactedsnow': 'COMP',
             }[lp]
     return block, treatment, time
 

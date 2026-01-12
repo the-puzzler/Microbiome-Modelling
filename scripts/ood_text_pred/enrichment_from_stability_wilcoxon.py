@@ -25,9 +25,9 @@ from scripts import utils as shared_utils  # noqa: E402
 
 
 #%% Paths and thresholds
-IN_TSV = 'data/ood_text_pred/average_otu_logits.tsv'
-OUT_TSV = 'data/ood_text_pred/term_enrichment_wilcoxon.tsv'
-OUT_PNG = 'data/ood_text_pred/term_enrichment_wilcoxon_top_bottom.png'
+IN_TSV = 'data/ood_text_pred/average_otu_logits_notextabl.tsv'
+OUT_TSV = 'data/ood_text_pred/term_enrichment_wilcoxon_notextabl.tsv'
+OUT_PNG = 'data/ood_text_pred/term_enrichment_wilcoxon_top_bottom_notextabl.png'
 
 # Minimum number of samples in which a term must appear
 MIN_TERM_SAMPLES = 50

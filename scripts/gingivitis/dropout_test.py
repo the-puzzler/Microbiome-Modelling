@@ -10,6 +10,12 @@ import torch
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score, average_precision_score
 
+OUT_DIR = os.path.join('data', 'paper_figures', 'drop_col_figures')
+
+# If True, append 8 zero-valued scratch tokens per SRS to the transformer input
+USE_ZERO_SCRATCH_TOKENS = True
+SCRATCH_TOKENS_PER_SRS = 16
+
 # Ensure project root is on sys.path so `from scripts import utils` works when running this file directly
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if PROJECT_ROOT not in sys.path:
@@ -84,17 +90,46 @@ if rename_map:
     resolver = shared_utils.build_otu_key_resolver(micro_to_otus, rename_map, shared_utils.PROKBERT_PATH, prefer='B')
 
 
-#%% Helper: score OTUs for a single SRS via shared util (raw logits)
+#%% Helper: score OTUs for a single SRS (optionally with zero scratch tokens)
 def score_otus_for_srs(srs, prokbert_file, model, device, resolver=None):
     emb_group = prokbert_file['embeddings']
-    return shared_utils.score_otus_for_srs(
-        srs,
-        micro_to_otus=micro_to_otus,
-        resolver=resolver,
-        model=model,
-        device=device,
-        emb_group=emb_group,
-    )
+    if not USE_ZERO_SCRATCH_TOKENS:
+        return shared_utils.score_otus_for_srs(
+            srs,
+            micro_to_otus=micro_to_otus,
+            resolver=resolver,
+            model=model,
+            device=device,
+            emb_group=emb_group,
+        )
+
+    otu_ids = micro_to_otus.get(srs, [])
+    if not otu_ids:
+        return {}
+    vecs = []
+    keep = []
+    for oid in otu_ids:
+        key = resolver.get(oid, oid) if resolver else oid
+        if key in emb_group:
+            vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32, device=device))
+            keep.append(oid)
+    if not vecs:
+        return {}
+    x1 = torch.stack(vecs, dim=0).unsqueeze(0)
+    n1 = x1.shape[1]
+    with torch.no_grad():
+        h1 = model.input_projection_type1(x1)
+        if SCRATCH_TOKENS_PER_SRS > 0:
+            z = torch.zeros((1, SCRATCH_TOKENS_PER_SRS, shared_utils.D_MODEL), dtype=torch.float32, device=device)
+            h = torch.cat([h1, z], dim=1)
+            mask = torch.ones((1, n1 + SCRATCH_TOKENS_PER_SRS), dtype=torch.bool, device=device)
+        else:
+            h = h1
+            mask = torch.ones((1, n1), dtype=torch.bool, device=device)
+        h = model.transformer(h, src_key_padding_mask=~mask)
+        logits = model.output_projection(h).squeeze(-1)
+    logits_type1 = logits[:, :n1].squeeze(0).cpu().numpy()
+    return dict(zip(keep, logits_type1))
 
 
 #%% Compute per subject-time per-OTU averaged logits across samples
@@ -239,6 +274,7 @@ if np.isfinite(auc_txt):
 
 # Overlay ROC curves for comparison
 from sklearn.metrics import roc_curve
+os.makedirs(OUT_DIR, exist_ok=True)
 fpr_b, tpr_b, _ = roc_curve(y_drop, -y_score_all)
 fpr_t, tpr_t, _ = roc_curve(y_drop_txt, -y_score_txt)
 _plt.figure(figsize=(6, 5))
@@ -250,7 +286,8 @@ _plt.ylabel('True Positive Rate')
 _plt.title('Dropout ROC: no text vs with text')
 _plt.legend(loc='lower right')
 _plt.tight_layout()
-_plt.show()
+_plt.savefig(os.path.join(OUT_DIR, 'gingivitis_dropout_roc_base_vs_text.png'), dpi=300)
+_plt.close()
 
 # Shared-axis density comparison for logits (no text vs with text)
 
@@ -274,9 +311,23 @@ ymax_base = _max_density(y_score_all, y_drop)
 ymax_text = _max_density(y_score_txt, y_drop_txt) if y_score_txt.size else 0.0
 ylim = (0.0, max(ymax_base, ymax_text) * 1.05 if max(ymax_base, ymax_text) > 0 else None)
 
-plot_dropout_summary(y_score_all, y_drop, title_prefix='Gingiva', xlim=(xmin, xmax), ylim=None if ylim[1] is None else (ylim[0], ylim[1]))
+plot_dropout_summary(
+    y_score_all,
+    y_drop,
+    title_prefix='Gingiva',
+    xlim=(xmin, xmax),
+    ylim=None if ylim[1] is None else (ylim[0], ylim[1]),
+    save_path=os.path.join(OUT_DIR, 'gingivitis_dropout_density_roc_base.png'),
+)
 if y_score_txt.size:
-    plot_dropout_summary(y_score_txt, y_drop_txt, title_prefix='Gingiva (+ text)', xlim=(xmin, xmax), ylim=None if ylim[1] is None else (ylim[0], ylim[1]))
+    plot_dropout_summary(
+        y_score_txt,
+        y_drop_txt,
+        title_prefix='Gingiva (+ text)',
+        xlim=(xmin, xmax),
+        ylim=None if ylim[1] is None else (ylim[0], ylim[1]),
+        save_path=os.path.join(OUT_DIR, 'gingivitis_dropout_density_roc_text.png'),
+    )
 
 # %%
 #%% Term impact analysis (ablation on ROC AUC)
@@ -355,6 +406,7 @@ plt.xticks(range(len(terms_sorted)), terms_sorted, rotation=45, ha='right')
 plt.ylabel('AUC contribution (Δ AUC)')
 plt.title('Per-term impact on dropout AUC (ablation)')
 plt.tight_layout()
-plt.show()
+plt.savefig(os.path.join(OUT_DIR, 'gingivitis_dropout_term_impact.png'), dpi=300)
+plt.close()
 
 # %%

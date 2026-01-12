@@ -19,12 +19,12 @@ from model import MicrobiomeTransformer
 # Default paths shared across tasks
 MICROBEATLAS_SAMPLES = 'data/diabimmune/microbeatlas_samples.tsv'
 MAPPED_PATH = 'data/microbeatlas/samples-otus.97.mapped'
-CHECKPOINT_PATH = 'data/model/checkpoint_epoch_0_final_newblack_2epoch.pt' #checkpoint_epoch_0_final_newblack_2epoch.pt # checkpoint_epoch_0_final_small_newblack.pt
+CHECKPOINT_PATH = 'data/model/checkpoint_epoch_0_final_newblack_2epoch_notextabl.pt' #checkpoint_epoch_0_final_newblack_2epoch.pt # checkpoint_epoch_0_final_small_newblack.pt # notextabl
 PROKBERT_PATH = 'data/model/prokbert_embeddings.h5'
 RENAME_MAP_PATH = 'data/microbeatlas/otus.rename.map1'
 
 # Model hyperparameters (shared)
-D_MODEL = 100 #100, 20
+D_MODEL = 100#100, 20
 NHEAD = 5
 NUM_LAYERS = 5 # 5, 3
 DROPOUT = 0.1

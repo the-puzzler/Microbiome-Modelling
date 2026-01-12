@@ -15,6 +15,12 @@ from scripts import utils as shared_utils  # noqa: E402
 from scripts.snowmelt.utils import load_snowmelt_metadata  # noqa: E402
 from scripts.gingivitis.utils import plot_dropout_summary  # noqa: E402
 
+OUT_DIR = os.path.join('data', 'paper_figures', 'drop_col_figures')
+
+# If True, append 8 zero-valued scratch tokens per SRS to the transformer input
+USE_ZERO_SCRATCH_TOKENS = True
+SCRATCH_TOKENS_PER_SRS = 16
+
 #%%
 
 run_meta, run_to_srs = load_snowmelt_metadata('data/snowmelt/snowmelt.csv')
@@ -51,14 +57,45 @@ with h5py.File(shared_utils.PROKBERT_PATH) as emb_file:
     for key, srs_list in bt_time_to_srs.items():
         sample_dicts = []
         for srs in srs_list:
-            sdict = shared_utils.score_otus_for_srs(
-                srs,
-                micro_to_otus=micro_to_otus,
-                resolver=resolver,
-                model=model,
-                device=device,
-                emb_group=emb_group,
-            )
+            if not USE_ZERO_SCRATCH_TOKENS:
+                sdict = shared_utils.score_otus_for_srs(
+                    srs,
+                    micro_to_otus=micro_to_otus,
+                    resolver=resolver,
+                    model=model,
+                    device=device,
+                    emb_group=emb_group,
+                )
+            else:
+                otu_ids = micro_to_otus.get(srs, [])
+                if not otu_ids:
+                    sdict = {}
+                else:
+                    vecs = []
+                    keep = []
+                    for oid in otu_ids:
+                        key_emb = resolver.get(oid, oid) if resolver else oid
+                        if key_emb in emb_group:
+                            vecs.append(torch.tensor(emb_group[key_emb][()], dtype=torch.float32, device=device))
+                            keep.append(oid)
+                    if not vecs:
+                        sdict = {}
+                    else:
+                        x1 = torch.stack(vecs, dim=0).unsqueeze(0)
+                        n1 = x1.shape[1]
+                        with torch.no_grad():
+                            h1 = model.input_projection_type1(x1)
+                            if SCRATCH_TOKENS_PER_SRS > 0:
+                                z = torch.zeros((1, SCRATCH_TOKENS_PER_SRS, shared_utils.D_MODEL), dtype=torch.float32, device=device)
+                                h = torch.cat([h1, z], dim=1)
+                                mask = torch.ones((1, n1 + SCRATCH_TOKENS_PER_SRS), dtype=torch.bool, device=device)
+                            else:
+                                h = h1
+                                mask = torch.ones((1, n1), dtype=torch.bool, device=device)
+                            h = model.transformer(h, src_key_padding_mask=~mask)
+                            logits = model.output_projection(h).squeeze(-1)
+                        logits_type1 = logits[:, :n1].squeeze(0).cpu().numpy()
+                        sdict = dict(zip(keep, logits_type1))
             if sdict:
                 sample_dicts.append(sdict)
         if not sample_dicts:
@@ -183,7 +220,9 @@ plt.ylabel('True Positive Rate')
 plt.title('Snowmelt Dropout ROC')
 plt.legend(loc='lower right')
 plt.tight_layout()
-plt.show()
+os.makedirs(OUT_DIR, exist_ok=True)
+plt.savefig(os.path.join(OUT_DIR, 'snowmelt_dropout_roc_base_vs_text.png'), dpi=300)
+plt.close()
 
 # Shared-axis logit density plots for both cases
 
@@ -207,9 +246,23 @@ ymax_base = _max_density(y_score_all, y_true_all)
 ymax_text = _max_density(y_score_txt, y_true_txt) if y_score_txt.size else 0.0
 ylim = (0.0, max(ymax_base, ymax_text) * 1.05 if max(ymax_base, ymax_text) > 0 else None)
 
-plot_dropout_summary(y_score_all, y_true_all, title_prefix='Snowmelt', xlim=(xmin, xmax), ylim=None if ylim[1] is None else (ylim[0], ylim[1]))
+plot_dropout_summary(
+    y_score_all,
+    y_true_all,
+    title_prefix='Snowmelt',
+    xlim=(xmin, xmax),
+    ylim=None if ylim[1] is None else (ylim[0], ylim[1]),
+    save_path=os.path.join(OUT_DIR, 'snowmelt_dropout_density_roc_base.png'),
+)
 if y_score_txt.size:
-    plot_dropout_summary(y_score_txt, y_true_txt, title_prefix='Snowmelt (+ text)', xlim=(xmin, xmax), ylim=None if ylim[1] is None else (ylim[0], ylim[1]))
+    plot_dropout_summary(
+        y_score_txt,
+        y_true_txt,
+        title_prefix='Snowmelt (+ text)',
+        xlim=(xmin, xmax),
+        ylim=None if ylim[1] is None else (ylim[0], ylim[1]),
+        save_path=os.path.join(OUT_DIR, 'snowmelt_dropout_density_roc_text.png'),
+    )
 
 
 

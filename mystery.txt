@@ -1,0 +1,106 @@
+=== Summary (AUC) ===
+Dataset Checkpoint      Condition       AUC
+Gingivitis      no-text no-text 0.7744
+Gingivitis      no-text real-text       0.8080
+Gingivitis      no-text random-text     0.6541
+Gingivitis      text-trained    no-text 0.7676
+Gingivitis      text-trained    real-text       0.7917
+Gingivitis      text-trained    random-text     0.5026
+Snowmelt        no-text no-text 0.5776
+Snowmelt        no-text real-text       0.6468
+Snowmelt        no-text random-text     0.5259
+Snowmelt        text-trained    no-text 0.5405
+Snowmelt        text-trained    real-text       0.5844
+Snowmelt        text-trained    random-text     0.5203
+DIABIMMUNE      no-text no-text 0.6749
+DIABIMMUNE      no-text real-text       0.6847
+DIABIMMUNE      no-text random-text     0.5073
+DIABIMMUNE      text-trained    no-text 0.6931
+DIABIMMUNE      text-trained    real-text       0.6578
+DIABIMMUNE      text-trained    random-text     0.3799
+
+
+
+
+[fresh] input_projection_type2 statistics:
+  shape: (100, 1536)
+  mean :  0.000059
+  std  :  0.014731
+  min  : -0.025515
+  max  :  0.025516
+  ||W||_F:  5.773536
+
+[no-text] input_projection_type2 statistics:
+  shape: (100, 1536)
+  mean : -0.000035
+  std  :  0.014707
+  min  : -0.025515
+  max  :  0.025515
+  ||W||_F:  5.764105
+
+[text-trained] input_projection_type2 statistics:
+  shape: (100, 1536)
+  mean : -0.000019
+  std  :  0.040384
+  min  : -0.227302
+  max  :  0.215401
+  ||W||_F:  15.827166
+
+Cosine similarities between flattened weight matrices:
+  fresh vs no-text     :  0.003171
+  fresh vs text-trained:  0.001740
+  no-text vs text-trained:  0.351988
+
+
+  === Sweep summary (AUC, gingivitis dropout) ===
+Checkpoint      #zero_tokens    AUC
+no-text 0       0.7744
+no-text 2       0.8095
+no-text 4       0.8102
+no-text 8       0.8101
+no-text 16      0.8126
+no-text 32      0.8105
+text-trained    0       0.7676
+text-trained    2       0.7821
+text-trained    4       0.7800
+text-trained    8       0.7744
+text-trained    16      0.7692
+text-trained    32      0.7567
+
+=== Sweep summary (AUC, gingivitis dropout) — random tokens ===
+Checkpoint      #random_tokens  AUC
+no-text 0       0.7744
+no-text 2       0.6235
+no-text 4       0.5725
+no-text 8       0.5414
+no-text 16      0.4848
+no-text 32      0.5285
+text-trained    0       0.7676
+text-trained    2       0.6023
+text-trained    4       0.5471
+text-trained    8       0.5386
+text-trained    16      0.4817
+text-trained    32      0.5301
+
+=== Sweep summary (AUC, gingivitis dropout) — real text + zero tokens ===
+Checkpoint      #zero_tokens    AUC
+no-text 0       0.8080
+no-text 2       0.8095
+no-text 4       0.8097
+no-text 8       0.8110
+no-text 16      0.8134
+no-text 32      0.8093
+text-trained    0       0.7917
+text-trained    2       0.7966
+text-trained    4       0.7972
+text-trained    8       0.7954
+text-trained    16      0.7904
+text-trained    32      0.7760
+
+so it seems the no text model does better when given some zero-tokens/scratch pad? still not clear why.
+need to run the zero token test on all the datasets and see if it imprvoes...
+
+
+
+TODO: re make results for all things in paper
+re make all results figures.

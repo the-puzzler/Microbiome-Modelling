@@ -23,9 +23,9 @@ from scripts import utils as shared_utils  # noqa: E402
 
 
 #%% Paths
-IN_TSV = 'data/ood_text_pred/average_otu_logits.tsv'
-OUT_TSV = 'data/ood_text_pred/term_stats.tsv'
-OUT_PNG = 'data/ood_text_pred/term_means_top_bottom.png'
+IN_TSV = 'data/ood_text_pred/average_otu_logits_notextabl.tsv'
+OUT_TSV = 'data/ood_text_pred/term_stats_notextabl.tsv'
+OUT_PNG = 'data/ood_text_pred/term_means_top_bottom_notextabl.png'
 # Minimum number of SRS occurrences required for a term to be included
 MIN_OCCURRENCES = 10
 

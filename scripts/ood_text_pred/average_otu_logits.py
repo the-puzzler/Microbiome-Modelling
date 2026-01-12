@@ -28,8 +28,12 @@ MAPPED_PATH = shared_utils.MAPPED_PATH
 CHECKPOINT_PATH = shared_utils.CHECKPOINT_PATH
 PROKBERT_PATH = shared_utils.PROKBERT_PATH
 RENAME_MAP_PATH = shared_utils.RENAME_MAP_PATH
-OUT_TSV = 'data/ood_text_pred/average_otu_logits.tsv'
+OUT_TSV = 'data/ood_text_pred/average_otu_logits_notextabl.tsv'
 PREFER_DOMAIN = 'B'  # prefer B97_ when both A/B exist
+
+# Optionally append zero-valued scratch tokens per SRS when scoring OTUs
+USE_ZERO_SCRATCH_TOKENS = True
+SCRATCH_TOKENS_PER_SRS = 16
 
 
 #%% Dataset: stream mapped file and yield (srs, otu_ids) per header block
@@ -196,14 +200,18 @@ with h5py.File(PROKBERT_PATH) as emb_file:
             if i > 0:
                 mask[b, :i] = True
         x1 = x1_cpu.to(device)
-        x2 = torch.zeros((B, 0, shared_utils.TXT_EMB), dtype=torch.float32, device=device)
-        mask_dev = mask.to(device)
+        mask_dev_otus = mask.to(device)
         with torch.no_grad():
             h1 = model.input_projection_type1(x1)
-            h2 = model.input_projection_type2(x2)
-            h = torch.cat([h1, h2], dim=1)
+            if USE_ZERO_SCRATCH_TOKENS and SCRATCH_TOKENS_PER_SRS > 0:
+                z = torch.zeros((B, SCRATCH_TOKENS_PER_SRS, shared_utils.D_MODEL), dtype=torch.float32, device=device)
+                h = torch.cat([h1, z], dim=1)
+                mask_dev = torch.ones((B, L + SCRATCH_TOKENS_PER_SRS), dtype=torch.bool, device=device)
+            else:
+                h = h1
+                mask_dev = mask_dev_otus
             h = model.transformer(h, src_key_padding_mask=~mask_dev)
-            logits = model.output_projection(h).squeeze(-1)  # (B, L)
+            logits = model.output_projection(h).squeeze(-1)  # (B, L or L+scratch)
         for b, (srs_b, _) in enumerate(buf):
             n = int(lengths[b])
             if n > 0:

@@ -87,7 +87,14 @@ def build_sample_embeddings(
     )
 
 
-def plot_dropout_summary(logits_t1, labels_dropout, title_prefix="Dropout prediction", xlim=None, ylim=None):
+def plot_dropout_summary(
+    logits_t1,
+    labels_dropout,
+    title_prefix="Dropout prediction",
+    xlim=None,
+    ylim=None,
+    save_path=None,
+):
     """
     Create a 1x2 subplot figure:
     - Left: density hist of T1 logits, colored by dropped-out (1) vs persistent (0)
@@ -137,11 +144,20 @@ def plot_dropout_summary(logits_t1, labels_dropout, title_prefix="Dropout predic
     ax.legend(loc='lower right')
 
     plt.tight_layout()
-    plt.show()
+    if save_path:
+        fig.savefig(save_path, dpi=300)
+        plt.close(fig)
+    else:
+        plt.show()
     return fig, axes
 
 
-def plot_colonisation_summary(logits_t1, labels_colonized, title_prefix="Colonisation prediction"):
+def plot_colonisation_summary(
+    logits_t1,
+    labels_colonized,
+    title_prefix="Colonisation prediction",
+    save_path=None,
+):
     """
     Similar to plot_dropout_summary but for colonization (gain):
     - Left: density of T1 logits for colonized vs non-colonized
@@ -179,5 +195,9 @@ def plot_colonisation_summary(logits_t1, labels_colonized, title_prefix="Colonis
     ax.legend(loc='lower right')
 
     plt.tight_layout()
-    plt.show()
+    if save_path:
+        fig.savefig(save_path, dpi=300)
+        plt.close(fig)
+    else:
+        plt.show()
     return fig, axes

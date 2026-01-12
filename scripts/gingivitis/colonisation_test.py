@@ -23,6 +23,12 @@ from scripts.gingivitis.utils import (
     plot_colonisation_summary,
 )  # noqa: E402
 
+OUT_DIR = os.path.join('data', 'paper_figures', 'drop_col_figures')
+
+# If True, append 4 zero-valued scratch tokens per SRS to the transformer input
+USE_ZERO_SCRATCH_TOKENS = True
+SCRATCH_TOKENS_PER_SRS = 16
+
 
 #%% Parameters (simple, explicit)
 N_COLONIZER_SAMPLES = 10000
@@ -190,13 +196,41 @@ with h5py.File(shared_utils.PROKBERT_PATH) as emb_file:
             aug_otus = list(base_otus)
             if target not in aug_otus:
                 aug_otus.append(target)
-            logits_map = shared_utils.score_otu_list(
-                aug_otus,
-                resolver=resolver,
-                model=model,
-                device=device,
-                emb_group=emb_group,
-            )
+            # No-text logits (optionally with zero scratch tokens)
+            if not USE_ZERO_SCRATCH_TOKENS:
+                logits_map = shared_utils.score_otu_list(
+                    aug_otus,
+                    resolver=resolver,
+                    model=model,
+                    device=device,
+                    emb_group=emb_group,
+                )
+            else:
+                # Implement score_otu_list + zero scratch tokens locally
+                vecs = []
+                keep = []
+                for oid in aug_otus:
+                    key_emb = resolver.get(oid, oid) if resolver else oid
+                    if key_emb in emb_group:
+                        vecs.append(torch.tensor(emb_group[key_emb][()], dtype=torch.float32, device=device))
+                        keep.append(oid)
+                if vecs:
+                    x1 = torch.stack(vecs, dim=0).unsqueeze(0)
+                    n1 = x1.shape[1]
+                    with torch.no_grad():
+                        h1 = model.input_projection_type1(x1)
+                        if SCRATCH_TOKENS_PER_SRS > 0:
+                            z = torch.zeros((1, SCRATCH_TOKENS_PER_SRS, shared_utils.D_MODEL), dtype=torch.float32, device=device)
+                            h = torch.cat([h1, z], dim=1)
+                            mask = torch.ones((1, n1 + SCRATCH_TOKENS_PER_SRS), dtype=torch.bool, device=device)
+                        else:
+                            h = h1
+                            mask = torch.ones((1, n1), dtype=torch.bool, device=device)
+                        h = model.transformer(h, src_key_padding_mask=~mask)
+                        logits_all = model.output_projection(h).squeeze(-1).squeeze(0).cpu().numpy()
+                    logits_map = dict(zip(keep, logits_all[:len(keep)]))
+                else:
+                    logits_map = {}
             if target in logits_map:
                 per_sample_scores.append(logits_map[target])
             # With text tokens (shared utils)
@@ -244,7 +278,13 @@ else:
 
 
 #%% Visualize
-plot_colonisation_summary(logits, y, title_prefix='Gingiva Colonisation')
+os.makedirs(OUT_DIR, exist_ok=True)
+plot_colonisation_summary(
+    logits,
+    y,
+    title_prefix='Gingiva Colonisation',
+    save_path=os.path.join(OUT_DIR, 'gingivitis_colonisation_density_roc_base.png'),
+)
 if logits_txt.size:
     # Overlay ROC curves
     fpr_b, tpr_b, _ = roc_curve(y, probs)
@@ -259,6 +299,7 @@ if logits_txt.size:
     plt.title('Gingiva Colonisation ROC')
     plt.legend(loc='lower right')
     plt.tight_layout()
-    plt.show()
+    plt.savefig(os.path.join(OUT_DIR, 'gingivitis_colonisation_roc_base_vs_text.png'), dpi=300)
+    plt.close()
 
 # %%

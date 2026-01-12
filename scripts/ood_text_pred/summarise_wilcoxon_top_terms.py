@@ -19,8 +19,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 
-IN_TSV = 'data/ood_text_pred/term_enrichment_wilcoxon.tsv'
-OUT_TXT = 'data/ood_text_pred/term_enrichment_wilcoxon_top_bottom.txt'
+IN_TSV = 'data/ood_text_pred/term_enrichment_wilcoxon_notextabl.tsv'
+OUT_TXT = 'data/ood_text_pred/term_enrichment_wilcoxon_top_bottom_notextabl.txt'
 TOP_K = 30
 
 

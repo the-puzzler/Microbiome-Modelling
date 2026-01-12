@@ -86,7 +86,7 @@ X = np.stack(X_list)
 
 
 #%% UMAP reduction to 2D/3D
-reducer = umap.UMAP(n_components=3, n_neighbors=15, min_dist=0.1, random_state=43)
+reducer = umap.UMAP(n_components=3, n_neighbors=15, min_dist=0.1, random_state=43, metric='cosine')
 X_umap = reducer.fit_transform(X)
 X2 = X_umap[:, :2]
 X3 = X_umap[:, :3]
@@ -168,7 +168,7 @@ plt.show()
 
 
 #%% 2D UMAP on presence/absence OTU vectors (colored by age)
-reducer_pa_2d = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=43)
+reducer_pa_2d = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1,metric='cosine', random_state=43)
 X_pa_2d = reducer_pa_2d.fit_transform(presence_X)
 
 fig, ax = plt.subplots(1, 1, figsize=(6, 5))

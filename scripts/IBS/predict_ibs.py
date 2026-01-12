@@ -24,6 +24,10 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
+# If True, append 8 zero-valued scratch tokens per sample when building embeddings
+USE_ZERO_SCRATCH_TOKENS = True
+SCRATCH_TOKENS_PER_SAMPLE = 16
+
 
 # Ensure project root on sys.path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -88,15 +92,59 @@ def build_sample_embeddings_for_runs(run_to_srs):
     model, device = shared_utils.load_microbiome_model(shared_utils.CHECKPOINT_PATH)
     rename_map = shared_utils.load_otu_rename_map(shared_utils.RENAME_MAP_PATH) if os.path.exists(shared_utils.RENAME_MAP_PATH) else None
     resolver = shared_utils.build_otu_key_resolver(micro_to_otus, rename_map, shared_utils.PROKBERT_PATH, prefer='B') if rename_map else {}
-    sample_embeddings, _ = shared_utils.build_sample_embeddings(
-        micro_to_otus,
-        model,
-        device,
-        prokbert_path=shared_utils.PROKBERT_PATH,
-        txt_emb=shared_utils.TXT_EMB,
-        rename_map=rename_map,
-        resolver=resolver,
-    )
+
+    if not USE_ZERO_SCRATCH_TOKENS:
+        sample_embeddings, _ = shared_utils.build_sample_embeddings(
+            micro_to_otus,
+            model,
+            device,
+            prokbert_path=shared_utils.PROKBERT_PATH,
+            txt_emb=shared_utils.TXT_EMB,
+            rename_map=rename_map,
+            resolver=resolver,
+        )
+    else:
+        # Manually mirror build_sample_embeddings but append zero scratch tokens
+        import h5py
+        import torch
+        sample_embeddings = {}
+        missing_otus = 0
+        with h5py.File(shared_utils.PROKBERT_PATH) as emb_file:
+            embedding_group = emb_file['embeddings']
+            for sample_key, otu_list in micro_to_otus.items():
+                otu_vectors = []
+                for otu_id in otu_list:
+                    candidates = []
+                    if resolver and otu_id in resolver:
+                        candidates.append(resolver[otu_id])
+                    candidates.append(otu_id)
+                    key_found = None
+                    for key in candidates:
+                        if key in embedding_group:
+                            key_found = key
+                            break
+                    if key_found is not None:
+                        vec = embedding_group[key_found][()]
+                        otu_vectors.append(torch.tensor(vec, dtype=torch.float32, device=device))
+                    else:
+                        missing_otus += 1
+                if not otu_vectors:
+                    continue
+                otu_tensor = torch.stack(otu_vectors, dim=0).unsqueeze(0)
+                type2_tensor = torch.zeros((1, 0, shared_utils.TXT_EMB), dtype=torch.float32, device=device)
+                with torch.no_grad():
+                    hidden_type1 = model.input_projection_type1(otu_tensor)
+                    hidden_type2 = model.input_projection_type2(type2_tensor)
+                    combined_hidden = torch.cat([hidden_type1, hidden_type2], dim=1)
+                    if SCRATCH_TOKENS_PER_SAMPLE > 0:
+                        z = torch.zeros((1, SCRATCH_TOKENS_PER_SAMPLE, shared_utils.D_MODEL), dtype=torch.float32, device=device)
+                        combined_hidden = torch.cat([combined_hidden, z], dim=1)
+                    mask = torch.ones((1, combined_hidden.shape[1]), dtype=torch.bool, device=device)
+                    hidden = model.transformer(combined_hidden, src_key_padding_mask=~mask)
+                    sample_vec = hidden.mean(dim=1).squeeze(0).cpu()
+                sample_embeddings[sample_key] = sample_vec
+        print('IBS SRS embeddings (with scratch tokens):', len(sample_embeddings), '| missing otu embeddings:', missing_otus)
+
     print('IBS SRS embeddings:', len(sample_embeddings))
     return sample_embeddings
 
@@ -239,4 +287,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

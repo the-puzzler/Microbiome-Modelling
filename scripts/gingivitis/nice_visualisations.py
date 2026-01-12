@@ -165,7 +165,8 @@ ncols = 3
 nrows = (plots + ncols - 1) // ncols
 fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols + 2, 3.5 * nrows), squeeze=False)
 
-cmap = plt.cm.plasma
+# Match logit colour scheme from paper_umap_logit_colours (coolwarm, red = higher)
+cmap = plt.cm.coolwarm
 norm = Normalize(vmin=float(final_logits.min()), vmax=float(final_logits.max()))
 
 # Dimensionality reducer
@@ -175,27 +176,45 @@ def reduce2d(X):
 # First subplot: DNA (input)
 XY0 = reduce2d(dna_all)
 ax = axes[0][0]
-for flag, marker in ((True, 'o'), (False, '^')):
+for flag, marker in ((True, 'o'), (False, 'x')):
     idx = np.where(is_original == flag)[0]
     if idx.size:
-        ax.scatter(XY0[idx, 0], XY0[idx, 1], s=8, alpha=0.85, c=cmap(norm(final_logits[idx])), marker=marker, label=('original' if flag else 'added'))
+        ax.scatter(
+            XY0[idx, 0],
+            XY0[idx, 1],
+            s=(8 if flag else 14),
+            alpha=0.85,
+            c=cmap(norm(final_logits[idx])),
+            marker=marker,
+            label=('original' if flag else 'imposter'),
+        )
 ax.set_title('Input DNA')
-ax.set_xlabel('UMAP1')
-ax.set_ylabel('UMAP2')
-ax.legend()
+ax.set_xticks([])
+ax.set_yticks([])
+ax.set_xlabel('')
+ax.set_ylabel('')
 
 # Subsequent subplots: each transformer layer output
 for li, out in enumerate(layer_outputs, start=1):
     r, c = divmod(li, ncols)
     ax = axes[r][c]
     XY = reduce2d(out)
-    for flag, marker in ((True, 'o'), (False, '^')):
+    for flag, marker in ((True, 'o'), (False, 'x')):
         idx = np.where(is_original == flag)[0]
         if idx.size:
-            ax.scatter(XY[idx, 0], XY[idx, 1], s=8, alpha=0.85, c=cmap(norm(final_logits[idx])), marker=marker)
+            ax.scatter(
+                XY[idx, 0],
+                XY[idx, 1],
+                s=(8 if flag else 14),
+                alpha=0.85,
+                c=cmap(norm(final_logits[idx])),
+                marker=marker,
+            )
     ax.set_title(f'Layer {li}')
-    ax.set_xlabel('UMAP1')
-    ax.set_ylabel('UMAP')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel('')
+    ax.set_ylabel('')
 
 # Turn off any unused axes
 for pi in range(plots, nrows * ncols):
@@ -210,9 +229,25 @@ sm.set_array([])
 plt.tight_layout(rect=(0, 0, 0.92, 0.95))
 
 # Dedicated colorbar axis: [left, bottom, width, height] in figure coords
-cax = fig.add_axes([0.935, 0.15, 0.02, 0.7])
+# Move the bar down slightly and shorten it to leave more room for the legend above.
+cax = fig.add_axes([0.935, 0.15, 0.02, 0.6])
 cbar = fig.colorbar(sm, cax=cax)
-cbar.set_label('Final logit')
+cbar.set_label('Final logit (Stability Score)')
+
+# Marker legend on top of the colorbar
+from matplotlib.lines import Line2D
+
+legend_elements = [
+    Line2D([0], [0], marker='o', linestyle='None', markerfacecolor='black', markeredgecolor='black', markersize=4, label='original'),
+    Line2D([0], [0], marker='x', linestyle='None', markeredgecolor='black', markersize=4, label='imposter'),
+]
+fig.legend(
+    handles=legend_elements,
+    loc='upper left',
+    bbox_to_anchor=(0.92, 0.88),
+    borderaxespad=0.0,
+    frameon=False,
+)
 
 #fig.suptitle(f'Gingivitis — per-layer OTU embeddings for {rand_srs}\nColor = final logit, marker: o=original, x=added', fontsize=12)
 plt.show()
