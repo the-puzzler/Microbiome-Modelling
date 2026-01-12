@@ -23,12 +23,19 @@ CHECKPOINT_PATH = 'data/model/checkpoint_epoch_0_final_newblack_2epoch_notextabl
 PROKBERT_PATH = 'data/model/prokbert_embeddings.h5'
 RENAME_MAP_PATH = 'data/microbeatlas/otus.rename.map1'
 
+if 'small' in CHECKPOINT_PATH:
+    print('Using SMALL model hyperparameters')
+    D_MODEL = 20
+    NUM_LAYERS = 3
+    DIM_FF = 80
+else:
+    D_MODEL = 100
+    NUM_LAYERS = 5
+    DIM_FF = 400
+    
 # Model hyperparameters (shared)
-D_MODEL = 100#100, 20
 NHEAD = 5
-NUM_LAYERS = 5 # 5, 3
 DROPOUT = 0.1
-DIM_FF = 400 #400, 80
 OTU_EMB = 384
 TXT_EMB = 1536
 
