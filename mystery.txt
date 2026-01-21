@@ -99,8 +99,3 @@ text-trained    32      0.7760
 
 so it seems the no text model does better when given some zero-tokens/scratch pad? still not clear why.
 need to run the zero token test on all the datasets and see if it imprvoes...
-
-
-
-TODO: re make results for all things in paper
-re make all results figures.
