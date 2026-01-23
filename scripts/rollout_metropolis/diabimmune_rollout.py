@@ -26,13 +26,13 @@ def parse_args():
     p = argparse.ArgumentParser(description="Metropolis rollouts from DIABIMMUNE (subject, age_at_collection_in_days) starts.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--n-starts", type=int, default=1000, help="Randomly sample this many real start points (0 = all).")
-    p.add_argument("--max-candidates", type=int, default=200)
     p.add_argument("--steps", type=int, default=300)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--p-anchor", type=float, default=0.95)
     p.add_argument("--p-add", type=float, default=0.34)
     p.add_argument("--p-drop", type=float, default=0.33)
     p.add_argument("--p-swap", type=float, default=0.33)
+    p.add_argument("--n-proposals", type=int, default=10, help="Number of candidate moves scored per step (batched).")
     p.add_argument("--out", default=OUT_TSV)
     p.add_argument("--samples-csv", default=SAMPLES_CSV)
     return p.parse_args()
@@ -122,7 +122,7 @@ def main():
         p_add=args.p_add,
         p_drop=args.p_drop,
         p_swap=args.p_swap,
-        max_candidates=args.max_candidates,
+        n_proposals=args.n_proposals,
     )
     print(f"Saved: {args.out}")
     print("start points:", len(starts))
@@ -130,4 +130,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

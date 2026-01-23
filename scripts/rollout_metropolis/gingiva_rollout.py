@@ -31,7 +31,7 @@ def parse_args():
     p.add_argument("--p-add", type=float, default=0.34)
     p.add_argument("--p-drop", type=float, default=0.33)
     p.add_argument("--p-swap", type=float, default=0.33)
-    p.add_argument("--max-candidates", type=int, default=200)
+    p.add_argument("--n-proposals", type=int, default=10, help="Number of candidate moves scored per step (batched).")
     p.add_argument("--out", default=OUT_TSV)
     p.add_argument("--gingiva-csv", default=GINGIVA_CSV)
     return p.parse_args()
@@ -83,7 +83,7 @@ def main():
         p_add=args.p_add,
         p_drop=args.p_drop,
         p_swap=args.p_swap,
-        max_candidates=args.max_candidates,
+        n_proposals=args.n_proposals,
     )
     print(f"Saved: {args.out}")
     print("start points:", len(starts))
@@ -91,4 +91,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

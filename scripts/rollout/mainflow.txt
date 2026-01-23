@@ -1,4 +1,0 @@
-Here first run gingiva rollout or diab rollout
-then run build caches.
-then one can runthe individual attractor analyses or, one can run debug single rollout,
-then plot single rollout

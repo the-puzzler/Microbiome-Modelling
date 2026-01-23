@@ -19,6 +19,32 @@ def build_otu_index(micro_to_otus):
     return all_otus, otu_to_idx
 
 
+def compute_embedding_from_otus(otu_ids, model, device, emb_group, resolver=None, scratch_tokens=0, d_model=None):
+    import torch
+
+    vecs = []
+    for oid in otu_ids:
+        key = resolver.get(oid, oid) if resolver else oid
+        if key in emb_group:
+            vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32, device=device))
+    if not vecs:
+        return None
+    x1 = torch.stack(vecs, dim=0).unsqueeze(0)
+    with torch.no_grad():
+        h1 = model.input_projection_type1(x1)
+        if scratch_tokens > 0:
+            if d_model is None:
+                raise ValueError("d_model must be provided when scratch_tokens > 0")
+            z = torch.zeros((1, scratch_tokens, d_model), dtype=torch.float32, device=device)
+            h = torch.cat([h1, z], dim=1)
+        else:
+            h = h1
+        mask = torch.ones((1, h.shape[1]), dtype=torch.bool, device=device)
+        h = model.transformer(h, src_key_padding_mask=~mask)
+        vec = h.mean(dim=1).squeeze(0).cpu().numpy()
+    return vec
+
+
 def _otu_ids_to_padded_batch(otu_id_lists, emb_group, resolver, device):
     import torch
 
@@ -137,61 +163,83 @@ def metropolis_steps(
     p_add=0.34,
     p_drop=0.33,
     p_swap=0.33,
-    max_candidates=200,
+    n_proposals=10,
 ):
     current = set(start_otus)
     if not current:
         return
-
-    # Candidate pool for additions (kept static for simplicity, like the existing rollout).
-    absent_pool = list(set(all_otus) - set(start_otus))
-    if len(absent_pool) > max_candidates:
-        absent_pool = rng.choice(np.asarray(absent_pool, dtype=object), size=max_candidates, replace=False).tolist()
 
     # Initialize anchors using logits from the full current set.
     logits0 = score_logits_for_sets([sorted(current)], model, device, emb_group, resolver)[0]
     anchor_set = pick_anchor_set(sorted(current), logits0, p_threshold=p_anchor, temperature=temperature)
     if not anchor_set:
         return
+    anchor_indices = sorted({otu_to_idx[o] for o in anchor_set if o in otu_to_idx})
+    anchor_indices_str = ";".join(str(i) for i in anchor_indices)
+    n_anchors = int(len(anchor_indices))
 
     weights = np.asarray([p_add, p_drop, p_swap], dtype=float)
     weights = weights / np.sum(weights)
 
+    def sample_absent():
+        if len(current) >= len(all_otus):
+            return None
+        # Rejection-sample from the full OTU universe until we hit an absent one.
+        for _ in range(1000):
+            o = all_otus[int(rng.integers(0, len(all_otus)))]
+            if o not in current:
+                return o
+        # Fallback: build the explicit list (slow, but should almost never happen).
+        absent = [o for o in all_otus if o not in current]
+        return rng.choice(np.asarray(absent, dtype=object)) if absent else None
+
     for step_idx in range(int(steps)):
         prev = set(current)
 
-        move = rng.choice(["add", "drop", "swap"], p=weights)
-        current_list = sorted(current)
-        candidates_absent = [o for o in absent_pool if o not in current]
         candidates_drop = [o for o in current if o not in anchor_set]
 
-        if move == "add" and not candidates_absent:
-            move = "drop" if candidates_drop else "swap"
-        if move == "drop" and not candidates_drop:
-            move = "add" if candidates_absent else "swap"
-        if move == "swap" and (not candidates_absent or not candidates_drop):
-            move = "add" if candidates_absent else "drop"
+        proposals = []
+        n_prop = max(1, int(n_proposals))
+        for _ in range(n_prop):
+            move = rng.choice(["add", "drop", "swap"], p=weights)
 
-        proposed = set(current)
-        if move == "add" and candidates_absent:
-            proposed.add(rng.choice(np.asarray(candidates_absent, dtype=object)))
-        elif move == "drop" and candidates_drop:
-            proposed.remove(rng.choice(np.asarray(candidates_drop, dtype=object)))
-        elif move == "swap" and candidates_absent and candidates_drop:
-            proposed.remove(rng.choice(np.asarray(candidates_drop, dtype=object)))
-            proposed.add(rng.choice(np.asarray(candidates_absent, dtype=object)))
+            if move == "add" and len(current) >= len(all_otus):
+                move = "drop" if candidates_drop else "swap"
+            if move == "drop" and not candidates_drop:
+                move = "add" if len(current) < len(all_otus) else "swap"
+            if move == "swap" and (len(current) >= len(all_otus) or not candidates_drop):
+                move = "add" if len(current) < len(all_otus) else "drop"
 
-        # Score current and proposed in a single batched forward pass.
-        logits_cur, logits_prop = score_logits_for_sets(
-            [sorted(current), sorted(proposed)],
+            proposed = set(current)
+            if move == "add":
+                o = sample_absent()
+                if o is not None:
+                    proposed.add(o)
+            elif move == "drop" and candidates_drop:
+                proposed.remove(rng.choice(np.asarray(candidates_drop, dtype=object)))
+            elif move == "swap" and candidates_drop:
+                proposed.remove(rng.choice(np.asarray(candidates_drop, dtype=object)))
+                o = sample_absent()
+                if o is not None:
+                    proposed.add(o)
+
+            proposals.append(sorted(proposed))
+
+        # Score current + all proposals in a single batched forward pass.
+        scored = score_logits_for_sets(
+            [sorted(current)] + proposals,
             model,
             device,
             emb_group,
             resolver,
         )
-        j_cur = objective_anchor_mean_logit(anchor_set, logits_cur)
-        j_prop = objective_anchor_mean_logit(anchor_set, logits_prop)
-        delta = j_prop - j_cur
+        j_cur = objective_anchor_mean_logit(anchor_set, scored[0])
+        j_props = [objective_anchor_mean_logit(anchor_set, d) for d in scored[1:]]
+
+        best_idx = int(np.nanargmax(np.asarray(j_props, dtype=float))) if j_props else -1
+        j_best = float(j_props[best_idx]) if best_idx >= 0 else j_cur
+        proposed_best = set(proposals[best_idx]) if best_idx >= 0 else set(current)
+        delta = j_best - j_cur
 
         accept = False
         if delta >= 0:
@@ -200,8 +248,10 @@ def metropolis_steps(
             if rng.random() < np.exp(delta / float(temperature)):
                 accept = True
 
+        anchor_mean_logit = j_cur
         if accept:
-            current = proposed
+            current = proposed_best
+            anchor_mean_logit = j_best
 
         n_same = int(len(prev & current))
         n_added = int(len(current - prev))
@@ -214,6 +264,133 @@ def metropolis_steps(
             "n_same": n_same,
             "n_added": n_added,
             "n_removed": n_removed,
+            "n_anchors": n_anchors,
+            "anchor_otu_indices": anchor_indices_str,
+            "anchor_mean_logit": float(anchor_mean_logit),
+            "current_otu_indices": ";".join(str(i) for i in current_indices),
+        }
+
+
+def metropolis_steps_fixed_anchors(
+    *,
+    current_otus,
+    anchor_set,
+    all_otus,
+    otu_to_idx,
+    model,
+    device,
+    emb_group,
+    resolver,
+    rng,
+    steps,
+    temperature,
+    step_offset=0,
+    p_add=0.34,
+    p_drop=0.33,
+    p_swap=0.33,
+    n_proposals=10,
+):
+    """
+    Resume-compatible metropolis steps with a fixed anchor set.
+
+    - `current_otus`: starting state (set/list of OTU ids)
+    - `anchor_set`: OTU ids to keep fixed (not droppable)
+    - `step_offset`: added to the output `step` (so you can continue numbering)
+    """
+    current = set(current_otus)
+    anchor_set = set(anchor_set)
+    if not current or not anchor_set:
+        return
+
+    anchor_indices = sorted({otu_to_idx[o] for o in anchor_set if o in otu_to_idx})
+    anchor_indices_str = ";".join(str(i) for i in anchor_indices)
+    n_anchors = int(len(anchor_indices))
+
+    weights = np.asarray([p_add, p_drop, p_swap], dtype=float)
+    weights = weights / np.sum(weights)
+
+    def sample_absent():
+        if len(current) >= len(all_otus):
+            return None
+        for _ in range(1000):
+            o = all_otus[int(rng.integers(0, len(all_otus)))]
+            if o not in current:
+                return o
+        absent = [o for o in all_otus if o not in current]
+        return rng.choice(np.asarray(absent, dtype=object)) if absent else None
+
+    for step_idx in range(int(steps)):
+        prev = set(current)
+        candidates_drop = [o for o in current if o not in anchor_set]
+
+        proposals = []
+        n_prop = max(1, int(n_proposals))
+        for _ in range(n_prop):
+            move = rng.choice(["add", "drop", "swap"], p=weights)
+
+            if move == "add" and len(current) >= len(all_otus):
+                move = "drop" if candidates_drop else "swap"
+            if move == "drop" and not candidates_drop:
+                move = "add" if len(current) < len(all_otus) else "swap"
+            if move == "swap" and (len(current) >= len(all_otus) or not candidates_drop):
+                move = "add" if len(current) < len(all_otus) else "drop"
+
+            proposed = set(current)
+            if move == "add":
+                o = sample_absent()
+                if o is not None:
+                    proposed.add(o)
+            elif move == "drop" and candidates_drop:
+                proposed.remove(rng.choice(np.asarray(candidates_drop, dtype=object)))
+            elif move == "swap" and candidates_drop:
+                proposed.remove(rng.choice(np.asarray(candidates_drop, dtype=object)))
+                o = sample_absent()
+                if o is not None:
+                    proposed.add(o)
+
+            proposals.append(sorted(proposed))
+
+        scored = score_logits_for_sets(
+            [sorted(current)] + proposals,
+            model,
+            device,
+            emb_group,
+            resolver,
+        )
+        j_cur = objective_anchor_mean_logit(anchor_set, scored[0])
+        j_props = [objective_anchor_mean_logit(anchor_set, d) for d in scored[1:]]
+
+        best_idx = int(np.nanargmax(np.asarray(j_props, dtype=float))) if j_props else -1
+        j_best = float(j_props[best_idx]) if best_idx >= 0 else j_cur
+        proposed_best = set(proposals[best_idx]) if best_idx >= 0 else set(current)
+        delta = j_best - j_cur
+
+        accept = False
+        if delta >= 0:
+            accept = True
+        else:
+            if rng.random() < np.exp(delta / float(temperature)):
+                accept = True
+
+        anchor_mean_logit = j_cur
+        if accept:
+            current = proposed_best
+            anchor_mean_logit = j_best
+
+        n_same = int(len(prev & current))
+        n_added = int(len(current - prev))
+        n_removed = int(len(prev - current))
+        current_indices = [otu_to_idx[o] for o in sorted(current) if o in otu_to_idx]
+
+        yield {
+            "step": int(step_offset) + step_idx + 1,
+            "n_current": int(len(current)),
+            "n_same": n_same,
+            "n_added": n_added,
+            "n_removed": n_removed,
+            "n_anchors": n_anchors,
+            "anchor_otu_indices": anchor_indices_str,
+            "anchor_mean_logit": float(anchor_mean_logit),
             "current_otu_indices": ";".join(str(i) for i in current_indices),
         }
 
@@ -234,7 +411,7 @@ def write_rollout_tsv(
     p_add=0.34,
     p_drop=0.33,
     p_swap=0.33,
-    max_candidates=200,
+    n_proposals=10,
 ):
     from scripts import utils as shared_utils
 
@@ -263,6 +440,9 @@ def write_rollout_tsv(
         "n_same",
         "n_added",
         "n_removed",
+        "n_anchors",
+        "anchor_otu_indices",
+        "anchor_mean_logit",
         "current_otu_indices",
     ]
     with open(out_tsv, "w", newline="") as out_f, h5py.File(prokbert_path) as emb_file:
@@ -290,7 +470,6 @@ def write_rollout_tsv(
                 p_add=p_add,
                 p_drop=p_drop,
                 p_swap=p_swap,
-                max_candidates=max_candidates,
+                n_proposals=n_proposals,
             ):
                 writer.writerow({"subject": subject, "t_start": t_start, **row})
-
