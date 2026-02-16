@@ -14,6 +14,7 @@ from matplotlib import patheffects as pe
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch
 from matplotlib.legend_handler import HandlerPatch
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 # Ensure project root on sys.path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -32,8 +33,15 @@ SAMPLES_CSV = os.path.join("data", "diabimmune", "samples.csv")
 OUT_PNG = os.path.join("data", "diabimmune", "diabimmune_rollout_trajectory_overlay.png")
 CACHE_NPZ = os.path.join("data", "diabimmune", "diabimmune_rollout_trajectory_overlay_cache.npz")
 
-JACCARD_K = 64
-JACCARD_LANDMARKS = 400
+JACCARD_LANDMARKS = 600
+WGS_RUN_TABLE = os.path.join("data", "diabimmune", "SraRunTable_wgs.csv")
+EXTRA_RUN_TABLE = os.path.join("data", "diabimmune", "SraRunTable_extra.csv")
+
+# Plot customization knobs (can be overridden by wrapper scripts).
+# - FONT_SIZE: set e.g. 14 to increase font sizes globally.
+# - HIDE_XY_TICK_LABELS: hides numeric tick labels on main panels.
+FONT_SIZE = None
+HIDE_XY_TICK_LABELS = False
 
 
 def parse_args():
@@ -42,7 +50,7 @@ def parse_args():
     p.add_argument("--cache", default=CACHE_NPZ)
     p.add_argument("--subject", default="", help="Subject id (default: first available with >=2 timepoints).")
     p.add_argument("--t-start", default="", help="Start age key (days, binned) for rollout (default: first for subject).")
-    p.add_argument("--subsample-frac", type=float, default=0.05, help="Fraction of rollout steps to embed/plot.")
+    p.add_argument("--subsample-frac", type=float, default=0.1, help="Fraction of rollout steps to embed/plot.")
     p.add_argument("--samples-csv", default=SAMPLES_CSV)
     return p.parse_args()
 
@@ -65,6 +73,13 @@ def time_key(t):
         return float(str(t).strip())
     except Exception:
         return 1e18
+
+
+def safe_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
 
 
 def parse_index_list(raw):
@@ -95,39 +110,49 @@ def compute_embedding_from_indices(idx_list, all_otus, model, device, emb_group,
     return vec
 
 
-def _minhash_signatures(index_lists, *, k=64, seed=0):
-    rng = np.random.default_rng(seed)
-    max_idx = 0
-    for arr in index_lists:
-        if arr.size:
-            max_idx = max(max_idx, int(np.max(arr)))
-    p = 2147483647  # 2^31-1, prime
-    if max_idx >= p:
-        raise ValueError("OTU index too large for chosen prime.")
-    a = rng.integers(1, p - 1, size=k, dtype=np.int64)
-    b = rng.integers(0, p - 1, size=k, dtype=np.int64)
+def _jaccard_distance_sorted_unique(a, b):
+    """
+    Exact Jaccard distance = 1 - |A∩B|/|A∪B| for sorted unique int arrays.
+    """
+    a = np.asarray(a, dtype=np.int32)
+    b = np.asarray(b, dtype=np.int32)
+    na = int(a.size)
+    nb = int(b.size)
+    if na == 0 and nb == 0:
+        return 0.0
 
-    sig = np.empty((len(index_lists), k), dtype=np.int64)
-    for i, idx in enumerate(index_lists):
-        if idx.size == 0:
-            sig[i, :] = p
-            continue
-        vals = (a[:, None] * idx[None, :] + b[:, None]) % p
-        sig[i, :] = np.min(vals, axis=1)
-    return sig.astype(np.int32, copy=False)
+    i = 0
+    j = 0
+    inter = 0
+    while i < na and j < nb:
+        va = int(a[i])
+        vb = int(b[j])
+        if va == vb:
+            inter += 1
+            i += 1
+            j += 1
+        elif va < vb:
+            i += 1
+        else:
+            j += 1
+    union = na + nb - inter
+    return 1.0 - (float(inter) / float(union)) if union else 0.0
 
 
-def _minhash_jaccard_distance_matrix(sig_a, sig_b, *, block=128):
-    sig_a = np.asarray(sig_a)
-    sig_b = np.asarray(sig_b)
-    na, k = sig_a.shape
-    nb = sig_b.shape[0]
+def _jaccard_distance_matrix(index_lists_a, index_lists_b):
+    """
+    Exact Jaccard distance matrix between two lists of index arrays.
+    Arrays are normalized to sorted unique.
+    """
+    a_lists = [np.unique(np.asarray(x, dtype=np.int32)) for x in index_lists_a]
+    b_lists = [np.unique(np.asarray(x, dtype=np.int32)) for x in index_lists_b]
+    na = len(a_lists)
+    nb = len(b_lists)
     out = np.empty((na, nb), dtype=np.float32)
-    for i0 in range(0, na, block):
-        i1 = min(na, i0 + block)
-        eq = sig_a[i0:i1, None, :] == sig_b[None, :, :]
-        matches = eq.sum(axis=2, dtype=np.int32)
-        out[i0:i1, :] = 1.0 - (matches.astype(np.float32) / float(k))
+    for i in range(na):
+        ai = a_lists[i]
+        for j in range(nb):
+            out[i, j] = _jaccard_distance_sorted_unique(ai, b_lists[j])
     return out
 
 
@@ -160,6 +185,20 @@ def _pcoa_project_out_of_sample(d_to_train, X_train, eigvals, train_row_mean, tr
     return np.asarray([(X_train[:, k].astype(np.float64) @ b) / float(eigvals[k]) for k in range(2)], dtype=np.float32)
 
 
+def _pcoa_project_many(d_to_train, X_train, eigvals, train_row_mean, train_grand_mean):
+    """
+    Vectorized out-of-sample projection for many points.
+    - d_to_train: (N, M) distances to the M training (landmark) points.
+    - X_train: (M, 2) landmark coordinates from _pcoa_2d_from_distance.
+    """
+    D = np.asarray(d_to_train, dtype=np.float64)
+    D2 = D * D
+    d2_mean = D2.mean(axis=1, keepdims=True)  # (N,1)
+    B = -0.5 * (D2 - np.asarray(train_row_mean, dtype=np.float64)[None, :] - d2_mean + float(train_grand_mean))
+    X = (B @ np.asarray(X_train, dtype=np.float64)) / np.asarray(eigvals, dtype=np.float64)[None, :]
+    return X.astype(np.float32)
+
+
 def load_rollout_rows(subject, t_start):
     rows = []
     with open(ROLL_TSV, "r", newline="") as f:
@@ -173,6 +212,63 @@ def load_rollout_rows(subject, t_start):
     return sorted(rows, key=lambda rr: int(rr.get("step", "0")))
 
 
+def pick_example_with_movement(tsv_path, valid_keys=None):
+    """
+    Pick (subject, t_start) with "decent movement" from the rollout TSV.
+
+    Heuristic: maximize anchor_mean_logit range, then number of changed steps.
+    If valid_keys is provided, only consider keys in that set.
+    """
+    best_key = None
+    best_tuple = None
+    stats = {}
+
+    with open(tsv_path, "r", newline="") as f:
+        r = csv.DictReader(f, delimiter="\t")
+        for row in r:
+            subj = row.get("subject", "").strip()
+            t0 = row.get("t_start", "").strip()
+            if not subj or not t0:
+                continue
+            key = (subj, t0)
+            if valid_keys is not None and key not in valid_keys:
+                continue
+
+            st = stats.get(key)
+            if st is None:
+                st = {"min": float("inf"), "max": float("-inf"), "changed": 0, "rows": 0}
+                stats[key] = st
+            st["rows"] += 1
+
+            try:
+                v = float(row.get("anchor_mean_logit", "nan"))
+            except Exception:
+                v = float("nan")
+            if np.isfinite(v):
+                st["min"] = min(st["min"], v)
+                st["max"] = max(st["max"], v)
+
+            try:
+                n_added = int(row.get("n_added", "0"))
+                n_removed = int(row.get("n_removed", "0"))
+            except Exception:
+                n_added = 0
+                n_removed = 0
+            if n_added != 0 or n_removed != 0:
+                st["changed"] += 1
+
+    for key, st in stats.items():
+        if st["rows"] < 3 or not np.isfinite(st["min"]) or not np.isfinite(st["max"]):
+            continue
+        rng = float(st["max"] - st["min"])
+        score = (rng, int(st["changed"]), int(st["rows"]))
+        if best_tuple is None or score > best_tuple:
+            best_tuple = score
+            best_key = key
+
+    return best_key
+
+
 def _diabimmune_age_bin_label(age_days):
     edges = [27.0, 216.2, 405.3, 594.5, 783.7, 972.8]
     if age_days < edges[0]:
@@ -182,6 +278,129 @@ def _diabimmune_age_bin_label(age_days):
         if lo <= age_days < hi:
             return f"{lo:g}-{hi:g}"
     return f"{edges[-1]:g}+"
+
+
+def _age_key_to_bin_label(age_key):
+    v = safe_float(age_key)
+    if v is None:
+        return "unknown"
+    return _diabimmune_age_bin_label(float(v))
+
+
+def _bin_sort_key(label):
+    s = str(label)
+    if s.startswith("<"):
+        try:
+            return (0, float(s[1:]))
+        except Exception:
+            return (0, 0.0)
+    if s.endswith("+"):
+        try:
+            return (2, float(s[:-1]))
+        except Exception:
+            return (2, 1e18)
+    if "-" in s:
+        try:
+            lo = float(s.split("-", 1)[0])
+            return (1, lo)
+        except Exception:
+            return (1, 1e18)
+    if s == "unknown":
+        return (3, 1e18)
+    try:
+        return (1, float(s))
+    except Exception:
+        return (3, 1e18)
+
+
+def _load_sra_run_table_rows(paths):
+    out = {}
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        with open(path) as f:
+            r = csv.DictReader(f)
+            if r.fieldnames:
+                r.fieldnames[0] = r.fieldnames[0].lstrip("\ufeff")
+            for row in r:
+                rid = str(row.get("Run", "")).strip()
+                if rid:
+                    out[rid] = row
+    return out
+
+
+def _instrument_category(raw):
+    s = str(raw or "").strip().lower()
+    if not s:
+        return ""
+    if "hiseq" in s:
+        return "HiSeq"
+    if "miseq" in s:
+        return "MiSeq"
+    return "Other"
+
+
+def _instrument_by_subject_age(samples_csv):
+    """
+    Return dict[(subjectID, age_key)] -> instrument category in {HiSeq, MiSeq, Other, mixed, ''}.
+    """
+    # sampleID -> age_key
+    sample_to_age = {}
+    with open(samples_csv) as f:
+        header = None
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            if header is None:
+                header = parts
+                header[0] = header[0].lstrip("\ufeff")
+                continue
+            row = dict(zip(header, parts))
+            sid = str(row.get("sampleID", "")).strip()
+            age = row.get("age_at_collection", "")
+            if sid and age != "":
+                try:
+                    sample_to_age[sid] = str(int(round(float(age))))
+                except Exception:
+                    continue
+
+    _run_rows, sra_to_micro, _gid_to_sample, _micro_to_subject, micro_to_sample = load_run_data()
+    # SRS -> list[Run]
+    srs_to_runs = {}
+    for rid, srs in sra_to_micro.items():
+        srs_to_runs.setdefault(str(srs), []).append(str(rid))
+
+    run_meta = _load_sra_run_table_rows([WGS_RUN_TABLE, EXTRA_RUN_TABLE])
+    agg = {}
+    for srs, info in micro_to_sample.items():
+        subj = str(info.get("subject", "")).strip()
+        sample_id = str(info.get("sample", "")).strip()
+        if not subj or not sample_id:
+            continue
+        age_key = sample_to_age.get(sample_id, "")
+        if not age_key:
+            continue
+        cats = []
+        for rid in srs_to_runs.get(str(srs), []):
+            row = run_meta.get(str(rid), {})
+            cat = _instrument_category(row.get("Instrument", ""))
+            if cat:
+                cats.append(cat)
+        if not cats:
+            continue
+        k = (subj, age_key)
+        agg.setdefault(k, set()).update(cats)
+
+    out = {}
+    for k, cats in agg.items():
+        cats = sorted(cats)
+        if len(cats) == 1:
+            out[k] = cats[0]
+        else:
+            out[k] = "mixed"
+    return out
 
 
 def main():
@@ -198,8 +417,16 @@ def main():
     jacc_arrow_dx = None
     jacc_arrow_dy = None
 
-    if os.path.exists(args.cache):
+    use_cache = os.path.exists(args.cache)
+    cache = None
+    if use_cache:
         cache = np.load(args.cache, allow_pickle=True)
+        traj_mode = str(cache["traj_mode"].item()) if "traj_mode" in cache.files else ""
+        pca_basis = str(cache["pca_basis"].item()) if "pca_basis" in cache.files else ""
+        if traj_mode != "from_start" or pca_basis != "real":
+            use_cache = False
+
+    if use_cache:
         subject = str(cache["subject"].item())
         t_start = str(cache["t_start"].item())
         steps = cache["steps"].astype(int)
@@ -226,6 +453,10 @@ def main():
             jacc_arrow_py = cache["jacc_arrow_py"].astype(float)
             jacc_arrow_dx = cache["jacc_arrow_dx"].astype(float)
             jacc_arrow_dy = cache["jacc_arrow_dy"].astype(float)
+            jacc_metric = str(cache["jacc_metric"].item()) if "jacc_metric" in cache.files else ""
+            jacc_basis = str(cache["jacc_basis"].item()) if "jacc_basis" in cache.files else ""
+            if jacc_metric != "exact" or jacc_basis != "real":
+                jacc_real_xy = None
     else:
         endpoints_cache = np.load(ENDPOINTS_NPZ, allow_pickle=True)
         endpoints = endpoints_cache["endpoints"].astype(float)
@@ -245,14 +476,39 @@ def main():
         def subj_has_multi(s):
             return len({t for (ss, t) in subj_time_to_emb.keys() if ss == s}) >= 2
 
-        subject = args.subject.strip() or next((s for s in subjects if subj_has_multi(s)), subjects[0])
-        times_for_subject = sorted({t for (s, t) in subj_time_to_emb.keys() if s == subject}, key=time_key)
-        t_start = args.t_start.strip() or times_for_subject[0]
+        if args.subject.strip() and args.t_start.strip():
+            subject = args.subject.strip()
+            t_start = args.t_start.strip()
+        else:
+            valid_keys = set(subj_time_to_emb.keys())
+            picked = pick_example_with_movement(ROLL_TSV, valid_keys=valid_keys)
+            if picked is not None:
+                subject, t_start = picked
+            else:
+                subject = args.subject.strip() or next((s for s in subjects if subj_has_multi(s)), subjects[0])
+                t_start = args.t_start.strip() or ""
+
+        times_for_subject_all = sorted({t for (s, t) in subj_time_to_emb.keys() if s == subject}, key=time_key)
+        if not times_for_subject_all:
+            raise SystemExit(f"No timepoints found for subject={subject}.")
+        if not t_start:
+            t_start = times_for_subject_all[0]
+        if t_start not in set(times_for_subject_all):
+            t_start = times_for_subject_all[0]
+
+        # Plot the "real trajectory" only from the chosen start onwards.
+        # Otherwise the start point is in the middle of a polyline and looks like two paths.
+        try:
+            start_idx = times_for_subject_all.index(t_start)
+        except ValueError:
+            start_idx = 0
+        times_for_subject = times_for_subject_all[start_idx:]
 
         real_times = np.asarray([t for (_s, t) in subj_time_to_emb.keys()], dtype=str)
         real_embs = np.stack([v for v in subj_time_to_emb.values()], axis=0).astype(float)
 
-        mu, comps = pca2_fit(real_embs)
+        # Fit PCA on REAL samples only; endpoints are projected into that basis.
+        mu, comps = pca2_fit(real_embs.astype(float))
         pca_real_xy = pca2_transform(real_embs, mu, comps)
         pca_end_xy = pca2_transform(endpoints, mu, comps)
 
@@ -289,7 +545,10 @@ def main():
         )
 
         n_steps = len(rows)
-        n_keep = max(2, int(np.ceil(args.subsample_frac * n_steps)))
+        # Keep more points for the plotted rollout trajectory so it looks sequential/smooth.
+        n_keep = int(np.ceil(args.subsample_frac * n_steps))
+        n_keep = max(50, n_keep)
+        n_keep = max(2, min(n_steps, n_keep))
         idxs = np.unique(np.round(np.linspace(0, n_steps - 1, n_keep)).astype(int))
         idxs = np.unique(np.concatenate([idxs, np.asarray([0, n_steps - 1], dtype=int)]))
         rows_sub = [rows[i] for i in idxs.tolist()]
@@ -319,8 +578,10 @@ def main():
         rollout_xy = pca2_transform(np.stack(embs_sub, axis=0), mu, comps)
 
         start_xy = real_key_to_xy[(subject, t_start)]
-        rollout_xy = np.vstack([start_xy[None, :], rollout_xy])
-        rollout_steps = np.concatenate([np.asarray([0], dtype=int), rollout_steps], axis=0)
+        # Avoid duplicating step 0 (rows_sub often already includes step==0).
+        if rollout_steps.size == 0 or int(rollout_steps[0]) != 0:
+            rollout_xy = np.vstack([start_xy[None, :], rollout_xy])
+            rollout_steps = np.concatenate([np.asarray([0], dtype=int), rollout_steps], axis=0)
 
         np.savez(
             args.cache,
@@ -329,6 +590,8 @@ def main():
             steps=steps,
             n_current=n_current,
             anchor_mean_logit=anchor_mean_logit if anchor_mean_logit is not None else np.asarray([], dtype=float),
+            traj_mode=np.asarray("from_start", dtype=object),
+            pca_basis=np.asarray("real", dtype=object),
             real_traj_xy=real_traj_xy,
             rollout_xy=rollout_xy,
             rollout_steps=rollout_steps,
@@ -410,21 +673,6 @@ def main():
             age_val = subject_age_to_age.get((subj, tt))
             real_labels.append(_diabimmune_age_bin_label(float(age_val)) if age_val is not None else "unknown")
 
-        sig_all = _minhash_signatures(real_idx_all, k=JACCARD_K, seed=0)
-        n = sig_all.shape[0]
-        L = min(JACCARD_LANDMARKS, n)
-        rng = np.random.default_rng(0)
-        landmark_idx = rng.choice(n, size=L, replace=False) if n > L else np.arange(n, dtype=int)
-        sig_L = sig_all[landmark_idx]
-        D_LL = _minhash_jaccard_distance_matrix(sig_L, sig_L, block=128)
-        X_L, eigvals, row_mean, grand_mean = _pcoa_2d_from_distance(D_LL)
-
-        D_RL = _minhash_jaccard_distance_matrix(sig_all, sig_L, block=128)
-        jacc_real_xy = np.stack(
-            [_pcoa_project_out_of_sample(D_RL[i], X_L, eigvals, row_mean, grand_mean) for i in range(n)],
-            axis=0,
-        ).astype(np.float32)
-
         last_row_by_key = {}
         with open(ROLL_TSV, "r", newline="") as f:
             r = csv.DictReader(f, delimiter="\t")
@@ -437,36 +685,45 @@ def main():
                     step = int(row.get("step", "0"))
                 except Exception:
                     continue
-                k = (subj, tt)
+                k = (str(subj), str(tt))
                 prev = last_row_by_key.get(k)
                 if prev is None or step >= int(prev.get("step", "0")):
                     last_row_by_key[k] = row
 
         end_idx_lists = []
         for i in range(len(subj_arr)):
-            k = (subj_arr[i], t1_arr[i])
+            k = (str(subj_arr[i]), str(t1_arr[i]))
             rr = last_row_by_key.get(k, {})
             idx_list = parse_index_list(rr.get("current_otu_indices", ""))
             end_idx_lists.append(np.asarray([j for j in idx_list if 0 <= j < len(all_otus)], dtype=np.int32))
 
-        sig_end = _minhash_signatures(end_idx_lists, k=JACCARD_K, seed=1)
-        D_endL = _minhash_jaccard_distance_matrix(sig_end, sig_L, block=128)
-        jacc_end_xy = np.stack(
-            [_pcoa_project_out_of_sample(D_endL[i], X_L, eigvals, row_mean, grand_mean) for i in range(D_endL.shape[0])],
-            axis=0,
-        ).astype(np.float32)
+        # Build a Jaccard PCoA basis using landmarks sampled from REAL points only;
+        # endpoints are projected into that basis.
+        real_n = len(real_idx_all)
+        L = min(int(JACCARD_LANDMARKS), max(2, real_n))
+        rng = np.random.default_rng(0)
+        landmark_idx = rng.choice(real_n, size=L, replace=False) if real_n > L else np.arange(real_n, dtype=int)
+        idx_L = [real_idx_all[int(i)] for i in landmark_idx.tolist()]
+        D_LL = _jaccard_distance_matrix(idx_L, idx_L)
+        X_L, eigvals, row_mean, grand_mean = _pcoa_2d_from_distance(D_LL)
 
-        times_for_subject = sorted({t for (s, t) in real_keys if s == subject}, key=time_key)
+        D_real_L = _jaccard_distance_matrix(real_idx_all, idx_L)
+        jacc_real_xy = _pcoa_project_many(D_real_L, X_L, eigvals, row_mean, grand_mean).astype(np.float32)
+        D_end_L = _jaccard_distance_matrix(end_idx_lists, idx_L)
+        jacc_end_xy = _pcoa_project_many(D_end_L, X_L, eigvals, row_mean, grand_mean).astype(np.float32)
+
+        times_for_subject_all = sorted({t for (s, t) in real_keys if s == subject}, key=time_key)
+        try:
+            start_idx = times_for_subject_all.index(t_start)
+        except ValueError:
+            start_idx = 0
+        times_for_subject = times_for_subject_all[start_idx:]
         real_traj_idx = []
         for t in times_for_subject:
             otus = subject_age_to_otus.get((subject, t), set())
             real_traj_idx.append(np.asarray([otu_to_idx[o] for o in otus if o in otu_to_idx], dtype=np.int32))
-        sig_rt = _minhash_signatures(real_traj_idx, k=JACCARD_K, seed=2)
-        D_rtL = _minhash_jaccard_distance_matrix(sig_rt, sig_L, block=128)
-        jacc_real_traj_xy = np.stack(
-            [_pcoa_project_out_of_sample(D_rtL[i], X_L, eigvals, row_mean, grand_mean) for i in range(D_rtL.shape[0])],
-            axis=0,
-        ).astype(np.float32)
+        D_rtL = _jaccard_distance_matrix(real_traj_idx, idx_L)
+        jacc_real_traj_xy = _pcoa_project_many(D_rtL, X_L, eigvals, row_mean, grand_mean).astype(np.float32)
 
         rows = load_rollout_rows(subject, t_start)
         row_by_step = {int(r["step"]): r for r in rows}
@@ -478,17 +735,13 @@ def main():
             idx_list = parse_index_list(rr.get("current_otu_indices", "")) if rr else []
             rollout_idx.append(np.asarray([j for j in idx_list if 0 <= j < len(all_otus)], dtype=np.int32))
 
-        sig_roll = _minhash_signatures(rollout_idx, k=JACCARD_K, seed=3)
-        D_rollL = _minhash_jaccard_distance_matrix(sig_roll, sig_L, block=128)
-        jacc_rollout_xy = np.stack(
-            [_pcoa_project_out_of_sample(D_rollL[i], X_L, eigvals, row_mean, grand_mean) for i in range(D_rollL.shape[0])],
-            axis=0,
-        ).astype(np.float32)
+        D_rollL = _jaccard_distance_matrix(rollout_idx, idx_L)
+        jacc_rollout_xy = _pcoa_project_many(D_rollL, X_L, eigvals, row_mean, grand_mean).astype(np.float32)
 
         key_to_xy = {real_keys[i]: jacc_real_xy[i] for i in range(len(real_keys))}
         end_by_parent = {}
         for i in range(len(subj_arr)):
-            end_by_parent.setdefault((subj_arr[i], t1_arr[i]), []).append(jacc_end_xy[i])
+            end_by_parent.setdefault((str(subj_arr[i]), str(t1_arr[i])), []).append(jacc_end_xy[i])
         jacc_arrow_px, jacc_arrow_py, jacc_arrow_dx, jacc_arrow_dy = [], [], [], []
         for (subj, tt), pts in end_by_parent.items():
             if (subj, tt) not in key_to_xy:
@@ -512,6 +765,8 @@ def main():
             steps=steps,
             n_current=n_current,
             anchor_mean_logit=anchor_mean_logit if anchor_mean_logit is not None else np.asarray([], dtype=float),
+            traj_mode=np.asarray("from_start", dtype=object),
+            pca_basis=np.asarray("real", dtype=object),
             real_traj_xy=real_traj_xy,
             rollout_xy=rollout_xy,
             rollout_steps=rollout_steps,
@@ -531,33 +786,32 @@ def main():
             jacc_arrow_py=jacc_arrow_py,
             jacc_arrow_dx=jacc_arrow_dx,
             jacc_arrow_dy=jacc_arrow_dy,
+            jacc_metric=np.asarray("exact", dtype=object),
+            jacc_basis=np.asarray("real", dtype=object),
         )
 
     plt.style.use("seaborn-v0_8-white")
-    fig = plt.figure(figsize=(12.0, 14.0))
-    gs = fig.add_gridspec(3, 1, height_ratios=[1.0, 1.65, 1.65])
-    ax0 = fig.add_subplot(gs[0, 0])
-    ax1 = fig.add_subplot(gs[1, 0])
-    ax2 = fig.add_subplot(gs[2, 0])
+    if FONT_SIZE is not None:
+        plt.rcParams.update(
+            {
+                "font.size": FONT_SIZE,
+                "axes.titlesize": FONT_SIZE + 2,
+                "axes.labelsize": FONT_SIZE,
+                "legend.fontsize": max(1, FONT_SIZE - 1),
+                "xtick.labelsize": max(1, FONT_SIZE - 2),
+                "ytick.labelsize": max(1, FONT_SIZE - 2),
+            }
+        )
+    fig = plt.figure(figsize=(14.0, 10.0))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.0], width_ratios=[1.0, 1.0])
+    ax1 = fig.add_subplot(gs[0, :])  # PCA panel (full width)
+    ax2 = fig.add_subplot(gs[1, 0])  # Jaccard
+    ax3 = fig.add_subplot(gs[1, 1])  # Cohort in Jaccard coords
 
-    ax0.plot(steps, n_current, label="n_current", linewidth=2.0, color="black")
-    ax0.set_xlabel("step")
-    ax0.set_ylabel("n_current")
-    ax0.set_title(f"Rollout counts ({subject}, start={t_start})")
-    ax0.grid(True, alpha=0.25)
-
-    if anchor_mean_logit is not None and len(anchor_mean_logit) == len(steps):
-        ax0b = ax0.twinx()
-        ax0b.plot(steps, anchor_mean_logit, label="anchor_mean_logit", linewidth=1.6, color="#d62728", alpha=0.9)
-        ax0b.set_ylabel("anchor mean logit")
-        h0, l0 = ax0.get_legend_handles_labels()
-        h1, l1 = ax0b.get_legend_handles_labels()
-        ax0.legend(h0 + h1, l0 + l1, frameon=False, ncol=2)
-    else:
-        ax0.legend(frameon=False)
-
-    # Color map by age bin (use same scheme as other diabimmune plots: plasma over sorted bins)
-    bins = sorted(set(pca_real_times.tolist()) | set(pca_t1_labels.tolist()), key=time_key)
+    # Color map by age bin (use same scheme as other diabimmune plots).
+    pca_real_bins = np.asarray([_age_key_to_bin_label(t) for t in pca_real_times.tolist()], dtype=str)
+    pca_t1_bins = np.asarray([_age_key_to_bin_label(t) for t in pca_t1_labels.tolist()], dtype=str)
+    bins = sorted(set(pca_real_bins.tolist()) | set(pca_t1_bins.tolist()), key=_bin_sort_key)
     cmap3 = plt.cm.plasma
     color_by_bin = {b: cmap3(i / float(len(bins) - 1)) if len(bins) > 1 else cmap3(0.5) for i, b in enumerate(bins)}
 
@@ -573,7 +827,7 @@ def main():
         zorder=0,
     )
     for b in bins:
-        mask_r = pca_real_times == b
+        mask_r = pca_real_bins == b
         if np.any(mask_r):
             ax1.scatter(
                 pca_real_xy[mask_r, 0],
@@ -595,7 +849,7 @@ def main():
             angles="xy",
             scale_units="xy",
             pivot="tail",
-            scale=8.0,
+            scale=8,
             color="black",
             width=0.0016,
             headwidth=3,
@@ -648,13 +902,22 @@ def main():
     ax1.set_aspect("equal", adjustable="datalim")
     ax1.set_title("PC1/PC2 vector field + example trajectories")
 
+    # Inset: anchor_mean_logit over steps (no n_current line).
+    if anchor_mean_logit is not None and len(anchor_mean_logit) == len(steps):
+        ax_in = inset_axes(ax1, width="35%", height="28%", loc="upper right", borderpad=0.9)
+        ax_in.plot(steps, anchor_mean_logit, color="#d62728", linewidth=1.4, alpha=0.9)
+        ax_in.set_title("anchor_mean_logit", fontsize=8, pad=2)
+        ax_in.tick_params(axis="both", labelsize=7, length=2)
+        ax_in.grid(True, alpha=0.2)
+        ax_in.set_facecolor("white")
+
     class _HandlerArrow(HandlerPatch):
         def create_artists(self, legend, orig_handle, xdescent, ydescent, width, height, fontsize, trans):
             p = FancyArrowPatch(
                 (xdescent, ydescent + 0.5 * height),
                 (xdescent + width, ydescent + 0.5 * height),
                 arrowstyle="-|>",
-                mutation_scale=fontsize * 1.1,
+                mutation_scale=fontsize * 1.5,
                 linewidth=1.0,
                 color="black",
                 alpha=0.5,
@@ -719,7 +982,7 @@ def main():
         zorder=0,
     )
     for b in bins:
-        mask_r = pca_real_times == b
+        mask_r = pca_real_bins == b
         if np.any(mask_r):
             ax2.scatter(
                 jacc_real_xy[mask_r, 0],
@@ -741,7 +1004,7 @@ def main():
             angles="xy",
             scale_units="xy",
             pivot="tail",
-            scale=8.0,
+            scale=1.1,
             color="black",
             width=0.0016,
             headwidth=3,
@@ -751,62 +1014,92 @@ def main():
             zorder=2,
         )
 
-    (real_line2,) = ax2.plot(
-        jacc_real_traj_xy[:, 0],
-        jacc_real_traj_xy[:, 1],
-        color="black",
-        alpha=0.70,
-        linewidth=0.5,
-        zorder=4,
-    )
-    real_line2.set_path_effects([pe.Stroke(linewidth=2.0, foreground="white"), pe.Normal()])
-    ax2.scatter(
-        jacc_real_traj_xy[:, 0],
-        jacc_real_traj_xy[:, 1],
-        s=42,
-        facecolors="none",
-        edgecolors="black",
-        alpha=0.9,
-        linewidths=0.7,
-        zorder=5,
-        label="Real trajectory",
-    )
-
-    rollout_start_xy2 = jacc_rollout_xy[0]
-    ax2.scatter(
-        [rollout_start_xy2[0]],
-        [rollout_start_xy2[1]],
-        s=70,
-        facecolors="none",
-        edgecolors="#d62728",
-        linewidths=1.4,
-        zorder=7,
-        label="Rollout start",
-    )
-    (rollout_line2,) = ax2.plot(
-        jacc_rollout_xy[:, 0],
-        jacc_rollout_xy[:, 1],
-        color="#d62728",
-        alpha=0.55,
-        linewidth=0.5,
-        zorder=5,
-    )
-    rollout_line2.set_path_effects([pe.Stroke(linewidth=2.0, foreground="white"), pe.Normal()])
-    ax2.scatter(
-        jacc_rollout_xy[:, 0],
-        jacc_rollout_xy[:, 1],
-        s=10,
-        marker=".",
-        color="#d62728",
-        alpha=0.75,
-        linewidths=0,
-        zorder=6,
-        label="Rollout trajectory",
-    )
     ax2.set_xlabel("PCoA1 (Jaccard)")
     ax2.set_ylabel("PCoA2 (Jaccard)")
     ax2.set_aspect("equal", adjustable="datalim")
-    ax2.set_title("OTU Jaccard PCoA + example trajectories")
+    ax2.set_title("OTU Jaccard PCoA")
+
+    # Legend for Jaccard panel (match gingivitis style).
+    arrow_handle2 = FancyArrowPatch((0, 0), (1, 0), arrowstyle="-|>", label="Direction to endpoint")
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    drop_labels = {"Real trajectory", "Rollout start", "Rollout trajectory"}
+    kept = [(h, l) for (h, l) in zip(handles2, labels2) if l not in drop_labels]
+    handles2 = [arrow_handle2] + [h for (h, _l) in kept]
+    labels2 = ["Direction to endpoint"] + [l for (_h, l) in kept]
+    leg2 = ax2.legend(
+        handles=handles2,
+        labels=labels2,
+        frameon=True,
+        loc="lower right",
+        handler_map={FancyArrowPatch: _HandlerArrow()},
+    )
+    leg2.get_frame().set_edgecolor("0.7")
+    leg2.get_frame().set_linewidth(0.8)
+    leg2.get_frame().set_facecolor("white")
+    leg2.get_frame().set_alpha(0.9)
+
+    # Instrument panel in the same Jaccard coordinates.
+    inst_by_key = _instrument_by_subject_age(args.samples_csv)
+    real_cache = np.load(REAL_NPZ, allow_pickle=True)
+    keys_raw = real_cache["keys"]
+    real_keys = [(str(keys_raw[i][0]), str(keys_raw[i][1])) for i in range(len(keys_raw))]
+    inst_labels = np.asarray([inst_by_key.get(k, "") for k in real_keys], dtype=str)
+
+    ax3.scatter(
+        jacc_end_xy[:, 0],
+        jacc_end_xy[:, 1],
+        s=10,
+        marker=".",
+        color="#666666",
+        alpha=0.25,
+        linewidths=0,
+        zorder=0,
+        label="Rollout endpoints",
+    )
+
+    order = ["HiSeq", "MiSeq", "mixed", "Other"]
+    uniq = [c for c in order if c in set(inst_labels.tolist())]
+    cmap = plt.cm.Set2
+    color_by = {c: cmap(i % cmap.N) for i, c in enumerate(uniq)}
+    for c in uniq:
+        m = inst_labels == c
+        if np.any(m):
+            ax3.scatter(
+                jacc_real_xy[m, 0],
+                jacc_real_xy[m, 1],
+                s=18,
+                marker="o",
+                color=color_by[c],
+                alpha=0.85,
+                linewidths=0,
+                zorder=1,
+                label=c,
+            )
+
+    # Unknown instrument
+    m_unk = inst_labels == ""
+    if np.any(m_unk):
+        ax3.scatter(
+            jacc_real_xy[m_unk, 0],
+            jacc_real_xy[m_unk, 1],
+            s=12,
+            marker="o",
+            color="#bbbbbb",
+            alpha=0.55,
+            linewidths=0,
+            zorder=1,
+            label="unknown",
+        )
+
+    ax3.set_xlabel("PCoA1 (Jaccard)")
+    ax3.set_ylabel("PCoA2 (Jaccard)")
+    ax3.set_aspect("equal", adjustable="datalim")
+    ax3.set_title("Instrument in Jaccard space")
+    ax3.legend(frameon=True, loc="best", markerscale=1.2, fontsize=8)
+
+    if HIDE_XY_TICK_LABELS:
+        for ax in (ax1, ax2, ax3):
+            ax.tick_params(axis="both", which="both", labelbottom=False, labelleft=False)
 
     plt.tight_layout()
     plt.savefig(args.out, dpi=300)

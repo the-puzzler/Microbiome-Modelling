@@ -13,20 +13,86 @@ def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 
 
+class EmbeddingCache:
+    """
+    Small utility to avoid repeated HDF5 reads / tensor materialization.
+
+    - Caches per-OTU embedding tensors keyed by resolved embedding id.
+    - Caches missing keys to avoid repeated membership checks.
+    """
+
+    def __init__(self, *, max_items=50000):
+        from collections import OrderedDict
+
+        self.max_items = int(max_items) if max_items else 0
+        self._tensors = OrderedDict()
+        self._missing = set()
+
+    def _resolve_key(self, oid, resolver):
+        return resolver.get(oid, oid) if resolver else oid
+
+    def has(self, oid, emb_group, resolver=None):
+        key = self._resolve_key(oid, resolver)
+        if key in self._tensors:
+            self._tensors.move_to_end(key)
+            return True
+        if key in self._missing:
+            return False
+        ok = key in emb_group
+        if not ok:
+            self._missing.add(key)
+        return ok
+
+    def get_tensor(self, oid, emb_group, resolver=None):
+        import torch
+
+        key = self._resolve_key(oid, resolver)
+        if key in self._tensors:
+            t = self._tensors[key]
+            self._tensors.move_to_end(key)
+            return t
+        if key in self._missing:
+            return None
+        if key not in emb_group:
+            self._missing.add(key)
+            return None
+        arr = emb_group[key][()]
+        t = torch.as_tensor(arr, dtype=torch.float32)
+        self._tensors[key] = t
+        if self.max_items and len(self._tensors) > self.max_items:
+            self._tensors.popitem(last=False)
+        return t
+
+
 def build_otu_index(micro_to_otus):
     all_otus = sorted({oid for otus in micro_to_otus.values() for oid in otus})
     otu_to_idx = {otu: i for i, otu in enumerate(all_otus)}
     return all_otus, otu_to_idx
 
 
-def compute_embedding_from_otus(otu_ids, model, device, emb_group, resolver=None, scratch_tokens=0, d_model=None):
+def compute_embedding_from_otus(
+    otu_ids,
+    model,
+    device,
+    emb_group,
+    resolver=None,
+    scratch_tokens=0,
+    d_model=None,
+    *,
+    emb_cache=None,
+):
     import torch
 
     vecs = []
     for oid in otu_ids:
+        if emb_cache is not None:
+            t = emb_cache.get_tensor(oid, emb_group, resolver)
+            if t is not None:
+                vecs.append(t.to(device))
+            continue
         key = resolver.get(oid, oid) if resolver else oid
         if key in emb_group:
-            vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32, device=device))
+            vecs.append(torch.as_tensor(emb_group[key][()], dtype=torch.float32, device=device))
     if not vecs:
         return None
     x1 = torch.stack(vecs, dim=0).unsqueeze(0)
@@ -45,7 +111,7 @@ def compute_embedding_from_otus(otu_ids, model, device, emb_group, resolver=None
     return vec
 
 
-def _otu_ids_to_padded_batch(otu_id_lists, emb_group, resolver, device):
+def _otu_ids_to_padded_batch(otu_id_lists, emb_group, resolver, device, *, emb_cache=None):
     import torch
 
     seqs = []
@@ -54,9 +120,15 @@ def _otu_ids_to_padded_batch(otu_id_lists, emb_group, resolver, device):
         vecs = []
         keep = []
         for oid in otu_ids:
+            if emb_cache is not None:
+                t = emb_cache.get_tensor(oid, emb_group, resolver)
+                if t is not None:
+                    vecs.append(t)
+                    keep.append(oid)
+                continue
             key = resolver.get(oid, oid) if resolver else oid
             if key in emb_group:
-                vecs.append(torch.tensor(emb_group[key][()], dtype=torch.float32))
+                vecs.append(torch.as_tensor(emb_group[key][()], dtype=torch.float32))
                 keep.append(oid)
         if not vecs:
             seqs.append(torch.zeros((0, 384), dtype=torch.float32))
@@ -90,20 +162,20 @@ def _otu_ids_to_padded_batch(otu_id_lists, emb_group, resolver, device):
     return batch, mask, kept_ids
 
 
-def score_logits_for_sets(otu_id_lists, model, device, emb_group, resolver=None, txt_emb=1536):
+def score_logits_for_sets(otu_id_lists, model, device, emb_group, resolver=None, txt_emb=1536, *, emb_cache=None):
     """
     Return list[dict] mapping OTU->logit for each set, scoring logits for OTUs
     present in that set under the full-set context.
     """
     import torch
 
-    x1, mask, kept_ids = _otu_ids_to_padded_batch(otu_id_lists, emb_group, resolver, device)
+    x1, mask, kept_ids = _otu_ids_to_padded_batch(otu_id_lists, emb_group, resolver, device, emb_cache=emb_cache)
     if x1.shape[1] == 0:
         return [dict() for _ in otu_id_lists]
 
     x2 = torch.zeros((x1.shape[0], 0, txt_emb), dtype=torch.float32, device=device)
     full_mask = torch.ones((x1.shape[0], x1.shape[1] + x2.shape[1]), dtype=torch.bool, device=device)
-    with torch.no_grad():
+    with torch.inference_mode():
         h1 = model.input_projection_type1(x1)
         h2 = model.input_projection_type2(x2)
         h = torch.cat([h1, h2], dim=1)
@@ -122,20 +194,48 @@ def score_logits_for_sets(otu_id_lists, model, device, emb_group, resolver=None,
     return out
 
 
-def pick_anchor_set(start_otus, logits, p_threshold=0.95, temperature=1.0):
+def pick_anchor_set(start_otus, logits, p_threshold=0.95, temperature=1.0, *, top_pct=None, cap_frac=0.5):
     """
-    Anchors are a fixed subset of the initial set with sigmoid(logit/temperature) >= threshold.
+    Pick a fixed anchor subset from the starting OTUs.
+
+    Two modes:
+    - Threshold mode (default): anchors are OTUs with sigmoid(logit/temperature) >= p_threshold.
+    - Top-percent mode: set `top_pct` (0..100) to select the top `top_pct` percent by probability,
+      capped to at most `cap_frac` of the scored OTUs (default 50%).
     """
     scored = []
     for oid in start_otus:
         if oid in logits:
             p = sigmoid(float(logits[oid]) / float(temperature))
-            scored.append((oid, p, float(logits[oid])))
+            scored.append((oid, float(p), float(logits[oid])))
     scored.sort(key=lambda x: x[1], reverse=True)
-    anchors = [oid for (oid, p, _l) in scored if p >= p_threshold]
-    if not anchors and scored:
-        anchors = [scored[0][0]]
-    return set(anchors)
+    if not scored:
+        return set()
+
+    if top_pct is None:
+        anchors = [oid for (oid, p, _l) in scored if p >= p_threshold]
+        if not anchors:
+            anchors = [scored[0][0]]
+        return set(anchors)
+
+    try:
+        top_pct_f = float(top_pct)
+    except Exception:
+        top_pct_f = 0.0
+    top_pct_f = max(0.0, min(100.0, top_pct_f))
+
+    n_scored = len(scored)
+    k = int(np.ceil((top_pct_f / 100.0) * float(n_scored)))
+    try:
+        cap_f = float(cap_frac)
+    except Exception:
+        cap_f = 0.5
+    cap_f = max(0.0, min(1.0, cap_f))
+    k_cap = int(np.floor(cap_f * float(n_scored)))
+    k = min(k, k_cap if k_cap > 0 else n_scored)
+    k = max(1, min(k, n_scored))
+
+    return {oid for (oid, _p, _l) in scored[:k]}
 
 
 def objective_anchor_mean_logit(anchor_set, logits):
