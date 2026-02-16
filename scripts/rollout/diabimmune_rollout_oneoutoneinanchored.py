@@ -16,8 +16,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from scripts import utils as shared_utils  # noqa: E402
-from scripts.gingivitis.utils import collect_micro_to_otus, load_gingivitis_run_data  # noqa: E402
-from scripts.rollout_metropolis.core import (  # noqa: E402
+from scripts.diabimmune.utils import collect_micro_to_otus, load_run_data  # noqa: E402
+from scripts.rollout.core import (  # noqa: E402
     EmbeddingCache,
     build_otu_index,
     pick_anchor_set,
@@ -26,14 +26,16 @@ from scripts.rollout_metropolis.core import (  # noqa: E402
 )
 
 
-GINGIVA_CSV = os.path.join("data", "gingivitis", "gingiva.csv")
-OUT_TSV = os.path.join("data", "gingivitis", "visionary_rollout_prob_oneoutoneinanchored.tsv")
- 
+OUT_TSV = os.path.join("data", "diabimmune", "visionary_rollout_prob_oneoutoneinanchored.tsv")
+SAMPLES_CSV = os.path.join("data", "diabimmune", "samples.csv")
+
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Gingivitis full rollout using one-out-one-in with fixed anchors.")
-    p.add_argument("--gingiva-csv", default=GINGIVA_CSV)
+    p = argparse.ArgumentParser(
+        description="DIABIMMUNE full rollout using one-out-one-in with fixed anchors (subject, age_at_collection_in_days)."
+    )
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--n-starts", type=int, default=0, help="Randomly sample this many real start points (0 = all).")
     p.add_argument("--steps", type=int, default=300)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--p-anchor", type=float, default=0.95)
@@ -62,39 +64,59 @@ def parse_args():
         help="Per start: stop if anchor_mean_logit does not improve for N consecutive steps (0 = off).",
     )
     p.add_argument("--out", default=OUT_TSV)
+    p.add_argument("--samples-csv", default=SAMPLES_CSV)
     return p.parse_args()
 
 
-def time_key(t):
-    s = str(t).strip()
-    if s.upper() == "B":
-        return -1e9
+def safe_float(x):
     try:
-        return float(s)
+        return float(x)
     except Exception:
-        return 1e9
+        return None
 
 
-def build_subject_time_to_otus(gingiva_csv, sra_to_micro, micro_to_otus):
-    subject_time_to_otus = defaultdict(set)
-    with open(gingiva_csv) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            run = row.get("Run", "").strip()
-            subj = row.get("subject_code", "").strip()
-            tcode = row.get("time_code", "").strip()
-            if not run or not subj or not tcode:
+def age_bin_days(age_value):
+    return str(int(round(float(age_value))))
+
+
+def load_samples_table(samples_csv):
+    table = {}
+    with open(samples_csv) as f:
+        header = None
+        for line in f:
+            line = line.strip()
+            if not line:
                 continue
-            srs = sra_to_micro.get(run)
-            if not srs:
+            parts = line.split(",")
+            if header is None:
+                header = parts
+                header[0] = header[0].lstrip("\ufeff")
                 continue
-            otus = micro_to_otus.get(srs, [])
-            if otus:
-                subject_time_to_otus[(subj, tcode)].update(otus)
-    return subject_time_to_otus
+            row = dict(zip(header, parts))
+            sid = row.get("sampleID", "").strip()
+            if sid:
+                table[sid] = row
+    return table
 
 
-def sample_absent_with_embedding(rng, all_otus, current, emb_group, resolver, n, max_tries=200000, *, emb_cache=None):
+def build_subject_age_to_otus(micro_to_sample, micro_to_otus, samples_table):
+    subject_age_to_otus = defaultdict(set)
+    for srs, info in micro_to_sample.items():
+        subj = str(info.get("subject", "")).strip()
+        sample_id = str(info.get("sample", "")).strip()
+        if not subj or not sample_id:
+            continue
+        age = safe_float(samples_table.get(sample_id, {}).get("age_at_collection", ""))
+        if age is None:
+            continue
+        age_key = age_bin_days(age)
+        otus = micro_to_otus.get(srs, [])
+        if otus:
+            subject_age_to_otus[(subj, age_key)].update(otus)
+    return subject_age_to_otus
+
+
+def sample_absent_with_embedding(rng, all_otus, current, emb_group, resolver, n, *, emb_cache=None, max_tries=200000):
     out = []
     tries = 0
     while len(out) < n and tries < max_tries:
@@ -143,13 +165,8 @@ def _parse_index_list(raw):
 
 
 def load_existing_state(tsv_path):
-    """
-    Return per-(subject,t_start) resume info from an existing TSV.
-    Assumes rows are appended in step order for each key (true for this script).
-    """
     if not os.path.exists(tsv_path) or os.path.getsize(tsv_path) == 0:
         return {}
-
     state = {}
     with open(tsv_path, "r", newline="") as f:
         r = csv.DictReader(f, delimiter="\t")
@@ -189,7 +206,6 @@ def load_existing_state(tsv_path):
                 st["last_row"] = row
                 if row.get("anchor_otu_indices", "").strip():
                     st["anchor_otu_indices"] = row.get("anchor_otu_indices", "").strip()
-
     return state
 
 
@@ -199,12 +215,33 @@ def main():
 
     rng = np.random.default_rng(args.seed)
 
-    _, sra_to_micro = load_gingivitis_run_data(gingivitis_path=args.gingiva_csv)
-    micro_to_otus = collect_micro_to_otus(sra_to_micro)
-    subject_time_to_otus = build_subject_time_to_otus(args.gingiva_csv, sra_to_micro, micro_to_otus)
-    starts = [(subj, t, sorted(otus)) for (subj, t), otus in subject_time_to_otus.items() if otus]
-    if not starts:
-        raise SystemExit("No gingivitis start points found.")
+    _run_rows, sra_to_micro, _gid_to_sample, micro_to_subject, micro_to_sample = load_run_data()
+    micro_to_otus = collect_micro_to_otus(sra_to_micro, micro_to_subject)
+    samples_table = load_samples_table(args.samples_csv)
+    subject_age_to_otus = build_subject_age_to_otus(micro_to_sample, micro_to_otus, samples_table)
+    starts_all = [(subj, str(age), sorted(otus)) for (subj, age), otus in subject_age_to_otus.items() if otus]
+    if not starts_all:
+        raise SystemExit("No (subject,age) start points available for DIABIMMUNE.")
+
+    existing = load_existing_state(args.out)
+    starts_by_key = {(str(subj), str(age)): (subj, str(age), otus) for (subj, age, otus) in starts_all}
+
+    # Always include existing keys (so resume continues the same run).
+    existing_keys = list(existing.keys())
+    starts = [starts_by_key[k] for k in existing_keys if k in starts_by_key]
+
+    # Optionally add new starts up to n_starts total (including existing), else all.
+    remaining = [v for k, v in starts_by_key.items() if k not in existing]
+    if args.n_starts and args.n_starts > 0:
+        target = int(args.n_starts)
+        need = max(0, target - len(starts))
+        if need and len(remaining) > need:
+            idx = rng.choice(len(remaining), size=need, replace=False)
+            starts.extend([remaining[i] for i in idx.tolist()])
+        else:
+            starts.extend(remaining)
+    else:
+        starts.extend(remaining)
 
     all_otus, otu_to_idx = build_otu_index(micro_to_otus)
     if not all_otus:
@@ -228,7 +265,6 @@ def main():
         "current_otu_indices",
     ]
 
-    existing = load_existing_state(args.out)
     write_header = not os.path.exists(args.out) or os.path.getsize(args.out) == 0
     mode = "a" if not write_header else "w"
 
@@ -267,7 +303,6 @@ def main():
                 if not current:
                     continue
 
-                # Define anchors at step 0.
                 logits_cur = score_logits_for_sets(
                     [sorted(current)], model, device, emb_group, resolver, emb_cache=emb_cache
                 )[0]
@@ -286,7 +321,6 @@ def main():
                 anchor_indices = sorted({otu_to_idx[o] for o in anchor_set if o in otu_to_idx})
                 anchor_indices_str = ";".join(str(i) for i in anchor_indices)
 
-                # Record step 0 state
                 anchor_mean0 = anchor_mean_logit(anchor_set, logits_cur)
                 cur_idxs0 = [otu_to_idx[o] for o in sorted(current) if o in otu_to_idx]
                 w.writerow(
@@ -314,7 +348,6 @@ def main():
 
                 drop = choose_drop_lowest_prob_non_anchor(current, logits_cur, args.temperature, anchor_set)
                 if drop is None or len(current) <= max(1, len(anchor_set)):
-                    # No droppable non-anchor left: keep recording a steady state.
                     cur_idxs = [otu_to_idx[o] for o in sorted(current) if o in otu_to_idx]
                     anchor_mean = anchor_mean_logit(anchor_set, logits_cur)
                     w.writerow(
@@ -371,7 +404,6 @@ def main():
                 n_same = int(len(prev & current))
                 n_added = int(len(current - prev))
                 n_removed = int(len(prev - current))
-
                 anchor_mean = anchor_mean_logit(anchor_set, logits_cur)
                 cur_idxs = [otu_to_idx[o] for o in sorted(current) if o in otu_to_idx]
 
@@ -390,6 +422,7 @@ def main():
                         "current_otu_indices": ";".join(str(i) for i in cur_idxs),
                     }
                 )
+
                 if np.isfinite(anchor_mean) and anchor_mean > best_anchor_mean:
                     best_anchor_mean = float(anchor_mean)
                     nobest_run = 0

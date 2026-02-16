@@ -14,7 +14,20 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from scripts import utils as shared_utils  # noqa: E402
-from scripts.rollout_metropolis.core import build_otu_index, compute_embedding_from_otus  # noqa: E402
+from scripts.diabimmune.utils import collect_micro_to_otus, load_run_data  # noqa: E402
+from scripts.diabimmune import plot_diabimmune_trajectory_overlay as base  # noqa: E402
+from scripts.rollout.core import EmbeddingCache, build_otu_index, compute_embedding_from_otus  # noqa: E402
+
+
+ROLL_TSV = os.path.join("data", "diabimmune", "visionary_rollout_prob_oneoutoneinanchored.tsv")
+OUT_DIR = os.path.join("data", "rollout_metropolis")
+OUT_PNG = os.path.join(OUT_DIR, "diabimmune_rollout_trajectory_overlay_oneoutoneinanchored.png")
+
+REAL_NPZ = os.path.join("data", "diabimmune", "diabimmune_real_embeddings_cache_oneoutoneinanchored.npz")
+ENDPOINTS_NPZ = os.path.join("data", "diabimmune", "diabimmune_rollout_endpoints_cache_oneoutoneinanchored.npz")
+CACHE_NPZ = os.path.join("data", "diabimmune", "diabimmune_rollout_trajectory_overlay_cache_oneoutoneinanchored.npz")
+
+SAMPLES_CSV = os.path.join("data", "diabimmune", "samples.csv")
 
 
 def _parse_index_list(raw):
@@ -23,7 +36,7 @@ def _parse_index_list(raw):
     return [int(tok) for tok in str(raw).split(";") if str(tok).strip()]
 
 
-def load_rollout_rows(tsv_path):
+def _load_rollout_rows(tsv_path):
     by_start = defaultdict(list)
     with open(tsv_path, "r", newline="") as f:
         r = csv.DictReader(f, delimiter="\t")
@@ -37,55 +50,19 @@ def load_rollout_rows(tsv_path):
     return by_start
 
 
-def _gingiva_config():
-    from scripts.gingivitis.utils import collect_micro_to_otus, load_gingivitis_run_data  # noqa: E402
-
-    rollout_tsv = os.path.join("data", "gingivitis", "visionary_rollout_prob_metropolis.tsv")
-    gingiva_csv = os.path.join("data", "gingivitis", "gingiva.csv")
-    out_real_npz = os.path.join("data", "gingivitis", "visionary_rollout_direction_cache_metropolis.npz")
-    out_end_npz = os.path.join("data", "gingivitis", "gingivitis_rollout_endpoints_cache_metropolis.npz")
-
-    _, sra_to_micro = load_gingivitis_run_data(gingivitis_path=gingiva_csv)
-    micro_to_otus = collect_micro_to_otus(sra_to_micro)  # SRS -> OTUs
-
-    subject_time_to_otus = defaultdict(set)
-    with open(gingiva_csv) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            run = row.get("Run", "").strip()
-            subj = row.get("subject_code", "").strip()
-            tcode = row.get("time_code", "").strip()
-            if not run or not subj or not tcode:
-                continue
-            srs = sra_to_micro.get(run)
-            if not srs:
-                continue
-            otus = micro_to_otus.get(srs, [])
-            if otus:
-                subject_time_to_otus[(subj, tcode)].update(otus)
-
-    return {
-        "name": "gingiva",
-        "rollout_tsv": rollout_tsv,
-        "out_real_npz": out_real_npz,
-        "out_end_npz": out_end_npz,
-        "micro_to_otus": micro_to_otus,
-        "get_start_otus": lambda subj, t: subject_time_to_otus.get((subj, t), set()),
-    }
+def safe_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
 
 
-def _diabimmune_config():
-    from scripts.diabimmune.utils import collect_micro_to_otus, load_run_data  # noqa: E402
+def age_bin_days(age_value):
+    return str(int(round(float(age_value))))
 
-    rollout_tsv = os.path.join("data", "diabimmune", "visionary_rollout_prob_metropolis.tsv")
-    samples_csv = os.path.join("data", "diabimmune", "samples.csv")
-    out_real_npz = os.path.join("data", "diabimmune", "diabimmune_real_embeddings_cache_metropolis.npz")
-    out_end_npz = os.path.join("data", "diabimmune", "diabimmune_rollout_endpoints_cache_metropolis.npz")
 
-    _run_rows, sra_to_micro, _gid_to_sample, micro_to_subject, micro_to_sample = load_run_data()
-    micro_to_otus = collect_micro_to_otus(sra_to_micro, micro_to_subject)  # SRS -> OTUs
-
-    samples_table = {}
+def load_samples_table(samples_csv):
+    table = {}
     with open(samples_csv) as f:
         header = None
         for line in f:
@@ -100,17 +77,11 @@ def _diabimmune_config():
             row = dict(zip(header, parts))
             sid = row.get("sampleID", "").strip()
             if sid:
-                samples_table[sid] = row
+                table[sid] = row
+    return table
 
-    def safe_float(x):
-        try:
-            return float(x)
-        except Exception:
-            return None
 
-    def age_bin_days(age_value):
-        return str(int(round(float(age_value))))
-
+def build_subject_age_to_otus(micro_to_sample, micro_to_otus, samples_table):
     subject_age_to_otus = defaultdict(set)
     for srs, info in micro_to_sample.items():
         subj = str(info.get("subject", "")).strip()
@@ -124,32 +95,38 @@ def _diabimmune_config():
         otus = micro_to_otus.get(srs, [])
         if otus:
             subject_age_to_otus[(subj, age_key)].update(otus)
-
-    return {
-        "name": "diabimmune",
-        "rollout_tsv": rollout_tsv,
-        "out_real_npz": out_real_npz,
-        "out_end_npz": out_end_npz,
-        "micro_to_otus": micro_to_otus,
-        "get_start_otus": lambda subj, t: subject_age_to_otus.get((subj, t), set()),
-    }
+    return subject_age_to_otus
 
 
-def _needs_cache(cfg):
-    return not (os.path.exists(cfg["out_real_npz"]) and os.path.exists(cfg["out_end_npz"]))
+def _needs_rebuild(roll_tsv, out_npz):
+    if not os.path.exists(out_npz):
+        return True
+    try:
+        return os.path.getmtime(out_npz) < os.path.getmtime(roll_tsv)
+    except Exception:
+        return True
 
 
-def _build_caches(cfg):
-    rollout_tsv = cfg["rollout_tsv"]
-    if not os.path.exists(rollout_tsv):
-        raise SystemExit(f"Missing rollout TSV: {rollout_tsv}")
+def ensure_oneoutoneinanchored_caches():
+    if not os.path.exists(ROLL_TSV):
+        raise SystemExit("Missing rollout TSV: %s" % ROLL_TSV)
 
-    by_start = load_rollout_rows(rollout_tsv)
+    if not (_needs_rebuild(ROLL_TSV, REAL_NPZ) or _needs_rebuild(ROLL_TSV, ENDPOINTS_NPZ)):
+        return
+
+    os.makedirs(os.path.dirname(REAL_NPZ), exist_ok=True)
+    os.makedirs(os.path.dirname(ENDPOINTS_NPZ), exist_ok=True)
+
+    by_start = _load_rollout_rows(ROLL_TSV)
     start_keys = sorted(by_start.keys())
     if not start_keys:
-        raise SystemExit(f"No usable (subject,t_start) rows found in TSV: {rollout_tsv}")
+        raise SystemExit("No usable (subject,t_start) rows found in TSV: %s" % ROLL_TSV)
 
-    micro_to_otus = cfg["micro_to_otus"]
+    _run_rows, sra_to_micro, _gid_to_sample, micro_to_subject, micro_to_sample = load_run_data()
+    micro_to_otus = collect_micro_to_otus(sra_to_micro, micro_to_subject)
+    samples_table = load_samples_table(SAMPLES_CSV)
+    subject_age_to_otus = build_subject_age_to_otus(micro_to_sample, micro_to_otus, samples_table)
+
     all_otus, _otu_to_idx = build_otu_index(micro_to_otus)
     if not all_otus:
         raise SystemExit("No OTUs available for index mapping.")
@@ -162,21 +139,18 @@ def _build_caches(cfg):
         else {}
     )
 
-    os.makedirs(os.path.dirname(cfg["out_real_npz"]), exist_ok=True)
-    os.makedirs(os.path.dirname(cfg["out_end_npz"]), exist_ok=True)
-
+    emb_cache = EmbeddingCache()
     real_keys = []
     real_embs = []
     endpoints = []
     endpoints_subject = []
     endpoints_tstart = []
 
-    get_start_otus = cfg["get_start_otus"]
     with h5py.File(shared_utils.PROKBERT_PATH) as emb_file:
         emb_group = emb_file["embeddings"]
 
         for subj, t_start in start_keys:
-            otus = sorted(get_start_otus(subj, t_start))
+            otus = sorted(subject_age_to_otus.get((subj, t_start), set()))
             if not otus:
                 continue
             e = compute_embedding_from_otus(
@@ -187,6 +161,7 @@ def _build_caches(cfg):
                 resolver=resolver,
                 scratch_tokens=0,
                 d_model=shared_utils.D_MODEL,
+                emb_cache=emb_cache,
             )
             if e is None:
                 continue
@@ -195,7 +170,10 @@ def _build_caches(cfg):
 
         for subj, t_start in start_keys:
             rows = by_start[(subj, t_start)]
-            rows_sorted = sorted(rows, key=lambda r: int(r.get("step")) if str(r.get("step", "")).isdigit() else -1)
+            rows_sorted = sorted(
+                rows,
+                key=lambda r: int(r.get("step")) if str(r.get("step", "")).isdigit() else -1,
+            )
             if not rows_sorted:
                 continue
             last = rows_sorted[-1]
@@ -209,6 +187,7 @@ def _build_caches(cfg):
                 resolver=resolver,
                 scratch_tokens=0,
                 d_model=shared_utils.D_MODEL,
+                emb_cache=emb_cache,
             )
             if e is None:
                 continue
@@ -217,17 +196,17 @@ def _build_caches(cfg):
             endpoints_tstart.append(str(t_start))
 
     if not real_embs:
-        raise SystemExit("No real embeddings computed (check data mappings and TSV).")
+        raise SystemExit("No real embeddings computed (check DIABIMMUNE mappings and TSV).")
     if not endpoints:
         raise SystemExit("No endpoints computed (check TSV).")
 
     np.savez(
-        cfg["out_real_npz"],
+        REAL_NPZ,
         keys=np.asarray(real_keys, dtype=object),
         emb=np.stack(real_embs, axis=0),
     )
     np.savez(
-        cfg["out_end_npz"],
+        ENDPOINTS_NPZ,
         endpoints=np.stack(endpoints, axis=0),
         subject=np.asarray(endpoints_subject, dtype=object),
         t1=np.asarray(endpoints_tstart, dtype=object),
@@ -235,22 +214,23 @@ def _build_caches(cfg):
         endpoints_per_start=np.asarray(1, dtype=int),
     )
 
-    print(f"Saved: {cfg['out_real_npz']}")
-    print(f"Saved: {cfg['out_end_npz']}")
-    print(f"{cfg['name']} real points:", len(real_keys))
-    print(f"{cfg['name']} endpoints:", len(endpoints))
+    print("Saved:", REAL_NPZ)
+    print("Saved:", ENDPOINTS_NPZ)
 
 
 def main():
-    cfgs = [_gingiva_config(), _diabimmune_config()]
-    to_run = [c for c in cfgs if _needs_cache(c) and os.path.exists(c["rollout_tsv"])]
+    os.makedirs(OUT_DIR, exist_ok=True)
+    ensure_oneoutoneinanchored_caches()
 
-    if not to_run:
-        print("No metropolis caches to build (either already exist or rollout TSV is missing).")
-        return
-
-    for cfg in to_run:
-        _build_caches(cfg)
+    base.ROLL_TSV = ROLL_TSV
+    base.ENDPOINTS_NPZ = ENDPOINTS_NPZ
+    base.REAL_NPZ = REAL_NPZ
+    base.OUT_PNG = OUT_PNG
+    base.CACHE_NPZ = CACHE_NPZ
+    base.SAMPLES_CSV = SAMPLES_CSV
+    base.FONT_SIZE = 14
+    base.HIDE_XY_TICK_LABELS = True
+    base.main()
 
 
 if __name__ == "__main__":
