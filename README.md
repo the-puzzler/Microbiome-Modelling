@@ -17,7 +17,7 @@ uv run python <script_path.py>
 ## Data location
 
 - Local data root: `data/`
-- Temporary download link (replace with real URL): `https://TEMP-DATA-LINK.example.com`
+- Download link : `https://doi.org/10.5281/zenodo.18679373`
 
 ## Main evaluation scripts
 
