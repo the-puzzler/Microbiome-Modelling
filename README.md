@@ -14,6 +14,11 @@ Run scripts with:
 uv run python <script_path.py>
 ```
 
+## Data location
+
+- Local data root: `data/`
+- Temporary download link (replace with real URL): `https://TEMP-DATA-LINK.example.com`
+
 ## Main evaluation scripts
 
 - `run_main_evals.sh`: runs the core zero-shot evaluations and prediction tasks.
@@ -35,11 +40,6 @@ Example main-evals visual (`gingivitis_dropout_density_roc_base.png`):
 - Architecture: `model.py`
 - Shared loading/config paths: `scripts/utils.py`
 - Default checkpoint path referenced by scripts: `data/model/checkpoint_epoch_0_final_newblack_2epoch_notextabl.pt`
-
-## Data location
-
-- Local data root: `data/`
-- Temporary download link (replace with real URL): `https://TEMP-DATA-LINK.example.com`
 
 ## What the model does
 
