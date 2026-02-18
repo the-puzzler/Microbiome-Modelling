@@ -18,6 +18,7 @@ uv run python <script_path.py>
 
 - Local data root: `data/`
 - Download link : `https://doi.org/10.5281/zenodo.18679373`
+- After download, place/extract the dataset so files are under `data/` in this repo.
 
 ## Main evaluation scripts
 
@@ -30,6 +31,17 @@ From repo root:
 bash run_main_evals.sh
 bash run_mlp_baselines.sh
 ```
+
+Notes:
+
+- To recreate the main analyses, run `bash run_main_evals.sh` from the repo root.
+- The bash runners execute many scripts in sequence. Progress and results are written to timestamped log files (for example `experiment_log_YYYYMMDD_HHMMSS.txt` and `mlp_baselines_log_YYYYMMDD_HHMMSS.txt`).
+- You can run any analysis script individually instead of the full bash runner. Example:
+
+```bash
+uv run python -u scripts/diabimmune/dropout_test.py
+```
+- If you want to use a different checkpoint, edit `CHECKPOINT_PATH` in `scripts/utils.py`.
 
 Example main-evals visual (`gingivitis_dropout_density_roc_base.png`):
 
