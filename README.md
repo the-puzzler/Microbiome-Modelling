@@ -110,3 +110,11 @@ Output figure:
 Visualization:
 
 ![DIABIMMUNE one-out-one-in anchored trajectory overlay](assets/diabimmune_rollout_trajectory_overlay_oneoutoneinanchored.png)
+
+What this figure shows:
+
+- Top panel (PCA): real DIABIMMUNE samples (age-coloured), rollout endpoints (grey), and arrows from each start to its endpoint. The inset tracks anchor mean logit over rollout steps for the highlighted example.
+- Bottom-left (Jaccard PCoA): the same rollout displacement pattern in OTU-set similarity space, confirming convergence in community membership space (not only embedding geometry).
+- Bottom-right (instrument-coloured): the same Jaccard coordinates coloured by sequencing technology (HiSeq/MiSeq/mixed), showing how technology-separated regions are pulled toward nearby stable endpoints.
+
+Interpretation: under one-out-one-in anchored updates, communities tend to move toward local attractor-like stable profiles learned by the model.
