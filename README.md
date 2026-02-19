@@ -1,7 +1,7 @@
 ![Imposter GPT](assets/gpt-image.png)
 
 
-# Susagi Imposter Finding Microbiome Model
+# **Sus**agi Imposter Finding Microbiome Model
 
 This repo contains a transformer-based microbiome representation model plus evaluation scripts for multiple downstream tasks.
 
