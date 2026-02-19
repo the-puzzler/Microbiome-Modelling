@@ -6,11 +6,12 @@ This repo contains a transformer-based microbiome representation model plus eval
 
 (For uv installation: https://docs.astral.sh/uv/getting-started/installation/)
 
+After cloning into the repo, run this from the repo root:
 ```bash
 uv sync
 ```
 
-Run scripts with:
+Then you can run any scripts after data download with:
 
 ```bash
 uv run python <script_path.py>
@@ -43,7 +44,7 @@ Notes:
 ```bash
 uv run python -u scripts/diabimmune/dropout_test.py
 ```
-- If you want to use a different checkpoint, edit `CHECKPOINT_PATH` in `scripts/utils.py`.
+- If you want to use a different model checkpoint, edit `CHECKPOINT_PATH` in `scripts/utils.py`.
 
 Example main-evals visual (`gingivitis_dropout_density_roc_base.png`):
 
@@ -54,6 +55,7 @@ Example main-evals visual (`gingivitis_dropout_density_roc_base.png`):
 - Architecture: `model.py`
 - Shared loading/config paths: `scripts/utils.py`
 - Default checkpoint path referenced by scripts: `data/model/checkpoint_epoch_0_final_newblack_2epoch_notextabl.pt`
+- Models come as part of the data package or can be downloaded individually from: https://huggingface.co/basilboy/microbiome-model
 
 ## What the model does
 
