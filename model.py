@@ -48,7 +48,7 @@ class MicrobiomeTransformer(nn.Module):
         
         # Output layers - per position
         self.output_projection = nn.Linear(d_model, 1)
-        self.output_activation = nn.Tanh()
+        
     
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -80,10 +80,7 @@ class MicrobiomeTransformer(nn.Module):
         # Output projection per position
         output = self.output_projection(x)  # (batch_size, total_seq_len, 1)
         
-        # Apply activation only if specified
-        if self.use_output_activation:
-            output = self.output_activation(output)  # (batch_size, total_seq_len, 1)
-            
+    
         output = output.squeeze(-1)  # (batch_size, total_seq_len)
         
         # Mask out padded positions
