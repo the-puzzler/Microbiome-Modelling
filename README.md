@@ -2,7 +2,9 @@
 
 This repo contains a transformer-based microbiome representation model plus evaluation scripts for multiple downstream tasks.
 
-## Install with `uv`
+## Install with `uv` 
+
+(For uv installation: https://docs.astral.sh/uv/getting-started/installation/)
 
 ```bash
 uv sync
