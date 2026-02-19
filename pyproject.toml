@@ -1,5 +1,5 @@
 [project]
-name = "diabimmune-example"
+name = "microbiome-model"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -12,6 +12,5 @@ dependencies = [
     "scikit-learn>=1.7.2",
     "torch>=2.9.0",
     "tqdm>=4.67.1",
-    "umap>=0.1.1",
     "umap-learn>=0.5.9.post2",
 ]

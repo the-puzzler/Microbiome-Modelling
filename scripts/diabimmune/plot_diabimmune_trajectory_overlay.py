@@ -42,6 +42,75 @@ EXTRA_RUN_TABLE = os.path.join("data", "diabimmune", "SraRunTable_extra.csv")
 # - HIDE_XY_TICK_LABELS: hides numeric tick labels on main panels.
 FONT_SIZE = None
 HIDE_XY_TICK_LABELS = False
+AGE_BIN_LEGEND_FONT_SIZE = 8
+REAL_TRAJ_LINEWIDTH = 0.5
+ROLLOUT_TRAJ_LINEWIDTH = 0.5
+TRAJ_STROKE_LINEWIDTH = 2.0
+ROLLOUT_TRAJ_COLOR = "#00cfe8"
+PCA_REAL_POINTS_ALPHA = 0.75
+PCA_ARROW_MERGE_BINS = 0
+PCA_ARROW_HEADWIDTH = 3
+PCA_ARROW_HEADLENGTH = 4
+PCA_ARROW_HEADAXISLENGTH = 3
+
+# Jaccard (bottom-left) panel style controls
+JACCARD_REAL_USE_AGE_COLORS = True
+JACCARD_REAL_POINT_COLOR = "#9a9a9a"
+JACCARD_REAL_POINT_ALPHA = 0.75
+JACCARD_ENDPOINT_COLOR = "#666666"
+JACCARD_ENDPOINT_ALPHA = 0.35
+JACCARD_ARROW_COLOR = "black"
+JACCARD_ARROW_ALPHA = 0.14
+JACCARD_ARROW_WIDTH = 0.0016
+JACCARD_ARROW_SCALE = 1.1
+JACCARD_ARROW_MERGE_BINS = 0
+JACCARD_ARROW_HEADWIDTH = 3
+JACCARD_ARROW_HEADLENGTH = 4
+JACCARD_ARROW_HEADAXISLENGTH = 3
+
+# Instrument (bottom-right) panel controls
+SHOW_INSTRUMENT_PANEL_ENDPOINTS = True
+
+
+def _merge_arrows_on_grid(px, py, dx, dy, n_bins):
+    if n_bins is None or int(n_bins) <= 0:
+        return px, py, dx, dy
+    px = np.asarray(px, dtype=float)
+    py = np.asarray(py, dtype=float)
+    dx = np.asarray(dx, dtype=float)
+    dy = np.asarray(dy, dtype=float)
+    if px.size == 0:
+        return px, py, dx, dy
+
+    n_bins = int(n_bins)
+    x0, x1 = float(np.min(px)), float(np.max(px))
+    y0, y1 = float(np.min(py)), float(np.max(py))
+    if not np.isfinite([x0, x1, y0, y1]).all() or x1 <= x0 or y1 <= y0:
+        return px, py, dx, dy
+
+    xi = np.floor((px - x0) / (x1 - x0 + 1e-12) * n_bins).astype(int)
+    yi = np.floor((py - y0) / (y1 - y0 + 1e-12) * n_bins).astype(int)
+    xi = np.clip(xi, 0, n_bins - 1)
+    yi = np.clip(yi, 0, n_bins - 1)
+
+    buckets = {}
+    for i in range(px.size):
+        buckets.setdefault((int(xi[i]), int(yi[i])), []).append(i)
+
+    mpx, mpy, mdx, mdy = [], [], [], []
+    for ids in buckets.values():
+        idx = np.asarray(ids, dtype=int)
+        mpx.append(float(np.mean(px[idx])))
+        mpy.append(float(np.mean(py[idx])))
+        mdx.append(float(np.mean(dx[idx])))
+        mdy.append(float(np.mean(dy[idx])))
+
+    return (
+        np.asarray(mpx, dtype=float),
+        np.asarray(mpy, dtype=float),
+        np.asarray(mdx, dtype=float),
+        np.asarray(mdy, dtype=float),
+    )
 
 
 def parse_args():
@@ -417,7 +486,9 @@ def main():
     jacc_arrow_dx = None
     jacc_arrow_dy = None
 
-    use_cache = os.path.exists(args.cache)
+    # If a specific subject/start is requested, bypass cache so the request is honored.
+    force_target = bool(str(args.subject).strip() or str(args.t_start).strip())
+    use_cache = os.path.exists(args.cache) and (not force_target)
     cache = None
     if use_cache:
         cache = np.load(args.cache, allow_pickle=True)
@@ -835,32 +906,47 @@ def main():
                 s=18,
                 marker="o",
                 color=color_by_bin[b],
-                alpha=0.75,
+                alpha=PCA_REAL_POINTS_ALPHA,
                 linewidths=0,
                 zorder=1,
             )
 
-    if arrow_px.size:
+    pca_px_plot, pca_py_plot, pca_dx_plot, pca_dy_plot = _merge_arrows_on_grid(
+        arrow_px,
+        arrow_py,
+        arrow_dx,
+        arrow_dy,
+        PCA_ARROW_MERGE_BINS,
+    )
+
+    if pca_px_plot.size:
         ax1.quiver(
-            arrow_px,
-            arrow_py,
-            arrow_dx,
-            arrow_dy,
+            pca_px_plot,
+            pca_py_plot,
+            pca_dx_plot,
+            pca_dy_plot,
             angles="xy",
             scale_units="xy",
             pivot="tail",
             scale=8,
             color="black",
             width=0.0016,
-            headwidth=3,
-            headlength=4,
-            headaxislength=3,
+            headwidth=PCA_ARROW_HEADWIDTH,
+            headlength=PCA_ARROW_HEADLENGTH,
+            headaxislength=PCA_ARROW_HEADAXISLENGTH,
             alpha=0.14,
             zorder=2,
         )
 
-    (real_line,) = ax1.plot(real_traj_xy[:, 0], real_traj_xy[:, 1], color="black", alpha=0.70, linewidth=0.5, zorder=4)
-    real_line.set_path_effects([pe.Stroke(linewidth=2.0, foreground="white"), pe.Normal()])
+    (real_line,) = ax1.plot(
+        real_traj_xy[:, 0],
+        real_traj_xy[:, 1],
+        color="black",
+        alpha=0.70,
+        linewidth=REAL_TRAJ_LINEWIDTH,
+        zorder=4,
+    )
+    real_line.set_path_effects([pe.Stroke(linewidth=TRAJ_STROKE_LINEWIDTH, foreground="white"), pe.Normal()])
     ax1.scatter(
         real_traj_xy[:, 0],
         real_traj_xy[:, 1],
@@ -879,19 +965,26 @@ def main():
         [rollout_start_xy[1]],
         s=70,
         facecolors="none",
-        edgecolors="#d62728",
+        edgecolors=ROLLOUT_TRAJ_COLOR,
         linewidths=1.4,
         zorder=7,
         label="Rollout start",
     )
-    (rollout_line,) = ax1.plot(rollout_xy[:, 0], rollout_xy[:, 1], color="#d62728", alpha=0.55, linewidth=0.5, zorder=5)
-    rollout_line.set_path_effects([pe.Stroke(linewidth=2.0, foreground="white"), pe.Normal()])
+    (rollout_line,) = ax1.plot(
+        rollout_xy[:, 0],
+        rollout_xy[:, 1],
+        color=ROLLOUT_TRAJ_COLOR,
+        alpha=0.55,
+        linewidth=ROLLOUT_TRAJ_LINEWIDTH,
+        zorder=5,
+    )
+    rollout_line.set_path_effects([pe.Stroke(linewidth=TRAJ_STROKE_LINEWIDTH, foreground="white"), pe.Normal()])
     ax1.scatter(
         rollout_xy[:, 0],
         rollout_xy[:, 1],
         s=10,
         marker=".",
-        color="#d62728",
+        color=ROLLOUT_TRAJ_COLOR,
         alpha=0.75,
         linewidths=0,
         zorder=6,
@@ -900,12 +993,12 @@ def main():
     ax1.set_xlabel("PC1")
     ax1.set_ylabel("PC2")
     ax1.set_aspect("equal", adjustable="datalim")
-    ax1.set_title("PC1/PC2 vector field + example trajectories")
+    ax1.set_title("Stability space PCA")
 
     # Inset: anchor_mean_logit over steps (no n_current line).
     if anchor_mean_logit is not None and len(anchor_mean_logit) == len(steps):
         ax_in = inset_axes(ax1, width="35%", height="28%", loc="upper right", borderpad=0.9)
-        ax_in.plot(steps, anchor_mean_logit, color="#d62728", linewidth=1.4, alpha=0.9)
+        ax_in.plot(steps, anchor_mean_logit, color=ROLLOUT_TRAJ_COLOR, linewidth=1.4, alpha=0.9)
         ax_in.set_title("anchor_mean_logit", fontsize=8, pad=2)
         ax_in.tick_params(axis="both", labelsize=7, length=2)
         ax_in.grid(True, alpha=0.2)
@@ -950,11 +1043,19 @@ def main():
             markeredgecolor=color_by_bin[b],
             markeredgewidth=0.0,
             markersize=6,
+            alpha=PCA_REAL_POINTS_ALPHA,
             label=str(b),
         )
         for b in bins
     ]
-    bin_legend = ax1.legend(handles=bin_handles, title="Age bin (days)", frameon=True, loc="upper left", markerscale=1.5, fontsize=8)
+    bin_legend = ax1.legend(
+        handles=bin_handles,
+        title="Age bin (days)",
+        frameon=True,
+        loc="upper left",
+        markerscale=1.5,
+        fontsize=AGE_BIN_LEGEND_FONT_SIZE,
+    )
     bin_legend.get_frame().set_edgecolor("0.7")
     bin_legend.get_frame().set_linewidth(0.8)
     bin_legend.get_frame().set_facecolor("white")
@@ -975,42 +1076,63 @@ def main():
         jacc_end_xy[:, 1],
         s=10,
         marker=".",
-        color="#666666",
-        alpha=0.35,
+        color=JACCARD_ENDPOINT_COLOR,
+        alpha=JACCARD_ENDPOINT_ALPHA,
         linewidths=0,
         label="Rollout endpoints",
         zorder=0,
     )
-    for b in bins:
-        mask_r = pca_real_bins == b
-        if np.any(mask_r):
-            ax2.scatter(
-                jacc_real_xy[mask_r, 0],
-                jacc_real_xy[mask_r, 1],
-                s=18,
-                marker="o",
-                color=color_by_bin[b],
-                alpha=0.75,
-                linewidths=0,
-                zorder=1,
-            )
+    if JACCARD_REAL_USE_AGE_COLORS:
+        for b in bins:
+            mask_r = pca_real_bins == b
+            if np.any(mask_r):
+                ax2.scatter(
+                    jacc_real_xy[mask_r, 0],
+                    jacc_real_xy[mask_r, 1],
+                    s=18,
+                    marker="o",
+                    color=color_by_bin[b],
+                    alpha=0.75,
+                    linewidths=0,
+                    zorder=1,
+                )
+    else:
+        ax2.scatter(
+            jacc_real_xy[:, 0],
+            jacc_real_xy[:, 1],
+            s=18,
+            marker="o",
+            color=JACCARD_REAL_POINT_COLOR,
+            alpha=JACCARD_REAL_POINT_ALPHA,
+            linewidths=0,
+            zorder=1,
+            label="Real samples",
+        )
 
-    if jacc_arrow_px.size:
+    jacc_px_plot, jacc_py_plot, jacc_dx_plot, jacc_dy_plot = _merge_arrows_on_grid(
+        jacc_arrow_px,
+        jacc_arrow_py,
+        jacc_arrow_dx,
+        jacc_arrow_dy,
+        JACCARD_ARROW_MERGE_BINS,
+    )
+
+    if jacc_px_plot.size:
         ax2.quiver(
-            jacc_arrow_px,
-            jacc_arrow_py,
-            jacc_arrow_dx,
-            jacc_arrow_dy,
+            jacc_px_plot,
+            jacc_py_plot,
+            jacc_dx_plot,
+            jacc_dy_plot,
             angles="xy",
             scale_units="xy",
             pivot="tail",
-            scale=1.1,
-            color="black",
-            width=0.0016,
-            headwidth=3,
-            headlength=4,
-            headaxislength=3,
-            alpha=0.14,
+            scale=JACCARD_ARROW_SCALE,
+            color=JACCARD_ARROW_COLOR,
+            width=JACCARD_ARROW_WIDTH,
+            headwidth=JACCARD_ARROW_HEADWIDTH,
+            headlength=JACCARD_ARROW_HEADLENGTH,
+            headaxislength=JACCARD_ARROW_HEADAXISLENGTH,
+            alpha=JACCARD_ARROW_ALPHA,
             zorder=2,
         )
 
@@ -1045,17 +1167,18 @@ def main():
     real_keys = [(str(keys_raw[i][0]), str(keys_raw[i][1])) for i in range(len(keys_raw))]
     inst_labels = np.asarray([inst_by_key.get(k, "") for k in real_keys], dtype=str)
 
-    ax3.scatter(
-        jacc_end_xy[:, 0],
-        jacc_end_xy[:, 1],
-        s=10,
-        marker=".",
-        color="#666666",
-        alpha=0.25,
-        linewidths=0,
-        zorder=0,
-        label="Rollout endpoints",
-    )
+    if SHOW_INSTRUMENT_PANEL_ENDPOINTS:
+        ax3.scatter(
+            jacc_end_xy[:, 0],
+            jacc_end_xy[:, 1],
+            s=10,
+            marker=".",
+            color="#666666",
+            alpha=0.25,
+            linewidths=0,
+            zorder=0,
+            label="Rollout endpoints",
+        )
 
     order = ["HiSeq", "MiSeq", "mixed", "Other"]
     uniq = [c for c in order if c in set(inst_labels.tolist())]
@@ -1102,7 +1225,7 @@ def main():
             ax.tick_params(axis="both", which="both", labelbottom=False, labelleft=False)
 
     plt.tight_layout()
-    plt.savefig(args.out, dpi=300)
+    plt.savefig(args.out, dpi=350)
     print(f"Saved: {args.out}")
     print(f"Saved cache: {args.cache}")
 
