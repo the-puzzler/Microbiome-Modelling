@@ -3,7 +3,13 @@
 
 # **Sus**agi Imposter Finding Microbiome Model
 
-This repo contains a transformer-based microbiome representation model plus evaluation scripts for multiple downstream tasks.
+## Overview
+
+Susagi is a microbiome modelling transformer model. The intention behind Susagi is to create an unsupervised model for understanding the ruels behind bacterial community composition. 
+
+Susagi is trained by an 'imposter' objective. In this objective, the model must distinguish between bacterial DNA that belongs to a community, and that which doesn't. Through this objective Susagi learns community stable states that allows it to make temporal predictions.
+
+This repo contains links to models, links to data and evaluation scripts for multiple downstream tasks.
 
 ## Install with `uv` 
 
