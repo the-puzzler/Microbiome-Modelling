@@ -891,8 +891,8 @@ def main():
         pca_end_xy[:, 1],
         s=10,
         marker=".",
-        color="#666666",
-        alpha=0.35,
+        color=JACCARD_ENDPOINT_COLOR,
+        alpha=JACCARD_ENDPOINT_ALPHA,
         linewidths=0,
         label="Rollout endpoints",
         zorder=0,
@@ -968,7 +968,7 @@ def main():
         edgecolors=ROLLOUT_TRAJ_COLOR,
         linewidths=1.4,
         zorder=7,
-        label="Rollout start",
+        label="Rollout trajectory",
     )
     (rollout_line,) = ax1.plot(
         rollout_xy[:, 0],
@@ -988,7 +988,7 @@ def main():
         alpha=0.75,
         linewidths=0,
         zorder=6,
-        label="Rollout trajectory",
+        label="_nolegend_",
     )
     ax1.set_xlabel("PC1")
     ax1.set_ylabel("PC2")
@@ -1019,10 +1019,34 @@ def main():
             return [p]
 
     arrow_handle = FancyArrowPatch((0, 0), (1, 0), arrowstyle="-|>", label="Direction to endpoint")
-    handles, _labels = ax1.get_legend_handles_labels()
-    handles = [arrow_handle] + handles
+    handles, labels = ax1.get_legend_handles_labels()
+    top_handles = []
+    top_labels = []
+    for h, l in zip(handles, labels):
+        if l == "Rollout endpoints":
+            top_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    linestyle="None",
+                    markerfacecolor=JACCARD_ENDPOINT_COLOR,
+                    markeredgecolor=JACCARD_ENDPOINT_COLOR,
+                    markeredgewidth=0.0,
+                    alpha=JACCARD_ENDPOINT_ALPHA,
+                    markersize=7.5,
+                    label=l,
+                )
+            )
+        else:
+            top_handles.append(h)
+        top_labels.append(l)
+
+    handles = [arrow_handle] + top_handles
+    labels = ["Direction to endpoint"] + top_labels
     traj_legend = ax1.legend(
         handles=handles,
+        labels=labels,
         frameon=True,
         loc="lower right",
         handler_map={FancyArrowPatch: _HandlerArrow()},
@@ -1144,6 +1168,45 @@ def main():
     # Legend for Jaccard panel (match gingivitis style).
     arrow_handle2 = FancyArrowPatch((0, 0), (1, 0), arrowstyle="-|>", label="Direction to endpoint")
     handles2, labels2 = ax2.get_legend_handles_labels()
+    handles2_mod = []
+    labels2_mod = []
+    for h, l in zip(handles2, labels2):
+        if l == "Rollout endpoints":
+            handles2_mod.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    linestyle="None",
+                    markerfacecolor=JACCARD_ENDPOINT_COLOR,
+                    markeredgecolor=JACCARD_ENDPOINT_COLOR,
+                    markeredgewidth=0.0,
+                    alpha=JACCARD_ENDPOINT_ALPHA,
+                    markersize=7.5,
+                    label=l,
+                )
+            )
+        elif l == "Real samples":
+            handles2_mod.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    linestyle="None",
+                    markerfacecolor=JACCARD_REAL_POINT_COLOR,
+                    markeredgecolor=JACCARD_REAL_POINT_COLOR,
+                    markeredgewidth=0.0,
+                    alpha=JACCARD_REAL_POINT_ALPHA,
+                    markersize=7.5,
+                    label=l,
+                )
+            )
+        else:
+            handles2_mod.append(h)
+        labels2_mod.append(l)
+
+    handles2 = handles2_mod
+    labels2 = labels2_mod
     drop_labels = {"Real trajectory", "Rollout start", "Rollout trajectory"}
     kept = [(h, l) for (h, l) in zip(handles2, labels2) if l not in drop_labels]
     handles2 = [arrow_handle2] + [h for (h, _l) in kept]
