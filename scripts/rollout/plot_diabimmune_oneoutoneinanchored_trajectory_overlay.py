@@ -26,6 +26,8 @@ OUT_PNG = os.path.join(OUT_DIR, "diabimmune_rollout_trajectory_overlay_oneoutone
 REAL_NPZ = os.path.join("data", "diabimmune", "diabimmune_real_embeddings_cache_oneoutoneinanchored.npz")
 ENDPOINTS_NPZ = os.path.join("data", "diabimmune", "diabimmune_rollout_endpoints_cache_oneoutoneinanchored.npz")
 CACHE_NPZ = os.path.join("data", "diabimmune", "diabimmune_rollout_trajectory_overlay_cache_oneoutoneinanchored.npz")
+DEFAULT_SUBJECT = "P014713"
+DEFAULT_T_START = "235"
 
 SAMPLES_CSV = os.path.join("data", "diabimmune", "samples.csv")
 
@@ -231,6 +233,8 @@ def main():
     base.FONT_SIZE = 14
     base.HIDE_XY_TICK_LABELS = True
     base.AGE_BIN_LEGEND_FONT_SIZE = 11
+    base.REAL_TRAJ_COLOR = "#0097a7"
+    base.ROLLOUT_TRAJ_COLOR = "black"
     base.PCA_REAL_POINTS_ALPHA = 0.5
     base.REAL_TRAJ_LINEWIDTH = 2.2
     base.ROLLOUT_TRAJ_LINEWIDTH = 2.2
@@ -253,6 +257,18 @@ def main():
     base.JACCARD_ARROW_HEADLENGTH = 6.0
     base.JACCARD_ARROW_HEADAXISLENGTH = 5.0
     base.SHOW_INSTRUMENT_PANEL_ENDPOINTS = False
+
+    # Default auto-picked example to the requested high-travel pair.
+    # CLI --subject/--t-start still override this via base parser.
+    _orig_pick = base.pick_example_with_movement
+
+    def _pick_default_with_fallback(tsv_path, valid_keys=None):
+        key = (DEFAULT_SUBJECT, DEFAULT_T_START)
+        if valid_keys is None or key in valid_keys:
+            return key
+        return _orig_pick(tsv_path, valid_keys=valid_keys)
+
+    base.pick_example_with_movement = _pick_default_with_fallback
     base.main()
 
 

@@ -46,6 +46,7 @@ AGE_BIN_LEGEND_FONT_SIZE = 8
 REAL_TRAJ_LINEWIDTH = 0.5
 ROLLOUT_TRAJ_LINEWIDTH = 0.5
 TRAJ_STROKE_LINEWIDTH = 2.0
+REAL_TRAJ_COLOR = "#0097a7"
 ROLLOUT_TRAJ_COLOR = "#00cfe8"
 PCA_REAL_POINTS_ALPHA = 0.75
 PCA_ARROW_MERGE_BINS = 0
@@ -340,13 +341,14 @@ def pick_example_with_movement(tsv_path, valid_keys=None):
 
 def _diabimmune_age_bin_label(age_days):
     edges = [27.0, 216.2, 405.3, 594.5, 783.7, 972.8]
+    edges_i = [int(round(x)) for x in edges]
     if age_days < edges[0]:
-        return f"<{edges[0]:g}"
-    for i in range(len(edges) - 1):
-        lo, hi = edges[i], edges[i + 1]
+        return f"<{edges_i[0]}"
+    for i in range(len(edges_i) - 1):
+        lo, hi = edges_i[i], edges_i[i + 1]
         if lo <= age_days < hi:
-            return f"{lo:g}-{hi:g}"
-    return f"{edges[-1]:g}+"
+            return f"{lo}-{hi}"
+    return f"{edges_i[-1]}+"
 
 
 def _age_key_to_bin_label(age_key):
@@ -398,20 +400,20 @@ def _load_sra_run_table_rows(paths):
     return out
 
 
-def _instrument_category(raw):
+def _assay_category(raw):
     s = str(raw or "").strip().lower()
     if not s:
         return ""
-    if "hiseq" in s:
-        return "HiSeq"
-    if "miseq" in s:
-        return "MiSeq"
+    if "amplicon" in s:
+        return "amplicon"
+    if "wgs" in s:
+        return "WGS"
     return "Other"
 
 
-def _instrument_by_subject_age(samples_csv):
+def _assay_by_subject_age(samples_csv):
     """
-    Return dict[(subjectID, age_key)] -> instrument category in {HiSeq, MiSeq, Other, mixed, ''}.
+    Return dict[(subjectID, age_key)] -> assay category in {WGS, amplicon, Other, mixed, ''}.
     """
     # sampleID -> age_key
     sample_to_age = {}
@@ -454,7 +456,7 @@ def _instrument_by_subject_age(samples_csv):
         cats = []
         for rid in srs_to_runs.get(str(srs), []):
             row = run_meta.get(str(rid), {})
-            cat = _instrument_category(row.get("Instrument", ""))
+            cat = _assay_category(row.get("Assay Type", ""))
             if cat:
                 cats.append(cat)
         if not cats:
@@ -941,7 +943,7 @@ def main():
     (real_line,) = ax1.plot(
         real_traj_xy[:, 0],
         real_traj_xy[:, 1],
-        color="black",
+        color=REAL_TRAJ_COLOR,
         alpha=0.70,
         linewidth=REAL_TRAJ_LINEWIDTH,
         zorder=4,
@@ -952,7 +954,7 @@ def main():
         real_traj_xy[:, 1],
         s=42,
         facecolors="none",
-        edgecolors="black",
+        edgecolors=REAL_TRAJ_COLOR,
         alpha=0.9,
         linewidths=0.7,
         zorder=5,
@@ -985,7 +987,7 @@ def main():
         s=10,
         marker=".",
         color=ROLLOUT_TRAJ_COLOR,
-        alpha=0.75,
+        alpha=0.95,
         linewidths=0,
         zorder=6,
         label="_nolegend_",
@@ -999,12 +1001,14 @@ def main():
     if anchor_mean_logit is not None and len(anchor_mean_logit) == len(steps):
         ax_in = inset_axes(ax1, width="35%", height="28%", loc="upper right", borderpad=0.9)
         ax_in.plot(steps, anchor_mean_logit, color=ROLLOUT_TRAJ_COLOR, linewidth=1.4, alpha=0.9)
-        ax_in.set_title("anchor_mean_logit", fontsize=8, pad=2)
+        ax_in.scatter(steps, anchor_mean_logit, s=10, color=ROLLOUT_TRAJ_COLOR, alpha=0.95, linewidths=0)
+        ax_in.set_xlabel("rollout step", fontsize=7, labelpad=1)
+        ax_in.set_ylabel("anchor mean logit", fontsize=7, labelpad=1)
         ax_in.tick_params(axis="both", labelsize=7, length=2)
         ax_in.grid(True, alpha=0.2)
         ax_in.set_facecolor("white")
 
-    class _HandlerArrow(HandlerPatch):
+    class _HandlerArrowTop(HandlerPatch):
         def create_artists(self, legend, orig_handle, xdescent, ydescent, width, height, fontsize, trans):
             p = FancyArrowPatch(
                 (xdescent, ydescent + 0.5 * height),
@@ -1012,13 +1016,38 @@ def main():
                 arrowstyle="-|>",
                 mutation_scale=fontsize * 1.5,
                 linewidth=1.0,
-                color="black",
-                alpha=0.5,
+                color="#5f5f5f",
+                alpha=0.35,
+            )
+            p.set_transform(trans)
+            return [p]
+
+    class _HandlerArrowBottom(HandlerPatch):
+        def create_artists(self, legend, orig_handle, xdescent, ydescent, width, height, fontsize, trans):
+            p = FancyArrowPatch(
+                (xdescent, ydescent + 0.5 * height),
+                (xdescent + width, ydescent + 0.5 * height),
+                arrowstyle="-|>",
+                mutation_scale=fontsize * 1.5,
+                linewidth=1.0,
+                color=JACCARD_ARROW_COLOR,
+                alpha=max(0.6, float(JACCARD_ARROW_ALPHA)),
             )
             p.set_transform(trans)
             return [p]
 
     arrow_handle = FancyArrowPatch((0, 0), (1, 0), arrowstyle="-|>", label="Direction to endpoint")
+    real_start_handle = Line2D(
+        [0],
+        [0],
+        marker="o",
+        linestyle="None",
+        markerfacecolor="none",
+        markeredgecolor="#111111",
+        markeredgewidth=1.3,
+        markersize=8.0,
+        label="Real start sample",
+    )
     handles, labels = ax1.get_legend_handles_labels()
     top_handles = []
     top_labels = []
@@ -1034,7 +1063,31 @@ def main():
                     markeredgecolor=JACCARD_ENDPOINT_COLOR,
                     markeredgewidth=0.0,
                     alpha=JACCARD_ENDPOINT_ALPHA,
-                    markersize=7.5,
+                    markersize=5.5,
+                    label=l,
+                )
+            )
+        elif l == "Real trajectory":
+            top_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    linestyle="-",
+                    color=REAL_TRAJ_COLOR,
+                    alpha=0.85,
+                    linewidth=REAL_TRAJ_LINEWIDTH,
+                    label=l,
+                )
+            )
+        elif l == "Rollout trajectory":
+            top_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    linestyle="-",
+                    color=ROLLOUT_TRAJ_COLOR,
+                    alpha=0.85,
+                    linewidth=ROLLOUT_TRAJ_LINEWIDTH,
                     label=l,
                 )
             )
@@ -1042,14 +1095,14 @@ def main():
             top_handles.append(h)
         top_labels.append(l)
 
-    handles = [arrow_handle] + top_handles
-    labels = ["Direction to endpoint"] + top_labels
+    handles = [arrow_handle, real_start_handle] + top_handles
+    labels = ["Direction to endpoint", "Real start sample"] + top_labels
     traj_legend = ax1.legend(
         handles=handles,
         labels=labels,
         frameon=True,
         loc="lower right",
-        handler_map={FancyArrowPatch: _HandlerArrow()},
+        handler_map={FancyArrowPatch: _HandlerArrowTop()},
     )
     traj_legend.get_frame().set_edgecolor("0.7")
     traj_legend.get_frame().set_linewidth(0.8)
@@ -1182,7 +1235,7 @@ def main():
                     markeredgecolor=JACCARD_ENDPOINT_COLOR,
                     markeredgewidth=0.0,
                     alpha=JACCARD_ENDPOINT_ALPHA,
-                    markersize=7.5,
+                    markersize=5.5,
                     label=l,
                 )
             )
@@ -1216,15 +1269,15 @@ def main():
         labels=labels2,
         frameon=True,
         loc="lower right",
-        handler_map={FancyArrowPatch: _HandlerArrow()},
+        handler_map={FancyArrowPatch: _HandlerArrowBottom()},
     )
     leg2.get_frame().set_edgecolor("0.7")
     leg2.get_frame().set_linewidth(0.8)
     leg2.get_frame().set_facecolor("white")
     leg2.get_frame().set_alpha(0.9)
 
-    # Instrument panel in the same Jaccard coordinates.
-    inst_by_key = _instrument_by_subject_age(args.samples_csv)
+    # Assay-type panel in the same Jaccard coordinates.
+    inst_by_key = _assay_by_subject_age(args.samples_csv)
     real_cache = np.load(REAL_NPZ, allow_pickle=True)
     keys_raw = real_cache["keys"]
     real_keys = [(str(keys_raw[i][0]), str(keys_raw[i][1])) for i in range(len(keys_raw))]
@@ -1243,7 +1296,7 @@ def main():
             label="Rollout endpoints",
         )
 
-    order = ["HiSeq", "MiSeq", "mixed", "Other"]
+    order = ["amplicon", "WGS", "mixed", "Other"]
     uniq = [c for c in order if c in set(inst_labels.tolist())]
     cmap = plt.cm.Set2
     color_by = {c: cmap(i % cmap.N) for i, c in enumerate(uniq)}
@@ -1262,7 +1315,7 @@ def main():
                 label=c,
             )
 
-    # Unknown instrument
+    # Unknown assay type
     m_unk = inst_labels == ""
     if np.any(m_unk):
         ax3.scatter(
@@ -1280,7 +1333,7 @@ def main():
     ax3.set_xlabel("PCoA1 (Jaccard)")
     ax3.set_ylabel("PCoA2 (Jaccard)")
     ax3.set_aspect("equal", adjustable="datalim")
-    ax3.set_title("Instrument in Jaccard space")
+    ax3.set_title("Assay type in Jaccard space")
     ax3.legend(frameon=True, loc="best", markerscale=1.2, fontsize=8)
 
     if HIDE_XY_TICK_LABELS:
