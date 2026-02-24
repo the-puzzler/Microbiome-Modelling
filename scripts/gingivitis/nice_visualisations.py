@@ -166,23 +166,57 @@ nrows = (plots + ncols - 1) // ncols
 fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols + 2, 3.5 * nrows), squeeze=False)
 
 # Match logit colour scheme from paper_umap_logit_colours (coolwarm, red = higher)
-cmap = plt.cm.coolwarm
+cmap = plt.cm.YlOrRd
 norm = Normalize(vmin=float(final_logits.min()), vmax=float(final_logits.max()))
 
 # Dimensionality reducer
 def reduce2d(X):
-    return umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1).fit_transform(X)
+    return umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=43).fit_transform(X)
+
+
+def _standardize_xy(XY):
+    XY = np.asarray(XY, dtype=np.float64)
+    mu = XY.mean(axis=0, keepdims=True)
+    sd = XY.std(axis=0, keepdims=True)
+    sd[sd == 0] = 1.0
+    return (XY - mu) / sd
+
+
+def _best_flip_rotate_alignment(XY, ref):
+    """
+    Align XY to ref using discrete 90deg rotations and optional axis flips.
+    """
+    Xn = _standardize_xy(XY)
+    Rn = _standardize_xy(ref)
+    candidates = []
+    for k in range(4):
+        rot = np.array(
+            [
+                [np.cos(k * np.pi / 2.0), -np.sin(k * np.pi / 2.0)],
+                [np.sin(k * np.pi / 2.0), np.cos(k * np.pi / 2.0)],
+            ]
+        )
+        base = Xn @ rot.T
+        for fx in (1.0, -1.0):
+            for fy in (1.0, -1.0):
+                cand = base.copy()
+                cand[:, 0] *= fx
+                cand[:, 1] *= fy
+                err = float(np.mean(np.sum((cand - Rn) ** 2, axis=1)))
+                candidates.append((err, cand))
+    return min(candidates, key=lambda t: t[0])[1]
 
 # First subplot: DNA (input)
 XY0 = reduce2d(dna_all)
+XY0_aligned = _standardize_xy(XY0)
 ax = axes[0][0]
 for flag, marker in ((True, 'o'), (False, 'x')):
     idx = np.where(is_original == flag)[0]
     if idx.size:
         ax.scatter(
-            XY0[idx, 0],
-            XY0[idx, 1],
-            s=(8 if flag else 14),
+            XY0_aligned[idx, 0],
+            XY0_aligned[idx, 1],
+            s=(8 if flag else 18),
             alpha=0.85,
             c=cmap(norm(final_logits[idx])),
             marker=marker,
@@ -199,13 +233,14 @@ for li, out in enumerate(layer_outputs, start=1):
     r, c = divmod(li, ncols)
     ax = axes[r][c]
     XY = reduce2d(out)
+    XY_aligned = _best_flip_rotate_alignment(XY, XY0)
     for flag, marker in ((True, 'o'), (False, 'x')):
         idx = np.where(is_original == flag)[0]
         if idx.size:
             ax.scatter(
-                XY[idx, 0],
-                XY[idx, 1],
-                s=(8 if flag else 14),
+                XY_aligned[idx, 0],
+                XY_aligned[idx, 1],
+                s=(8 if flag else 18),
                 alpha=0.85,
                 c=cmap(norm(final_logits[idx])),
                 marker=marker,
@@ -239,7 +274,7 @@ from matplotlib.lines import Line2D
 
 legend_elements = [
     Line2D([0], [0], marker='o', linestyle='None', markerfacecolor='black', markeredgecolor='black', markersize=4, label='original'),
-    Line2D([0], [0], marker='x', linestyle='None', markeredgecolor='black', markersize=4, label='imposter'),
+    Line2D([0], [0], marker='x', linestyle='None', markeredgecolor='black', markersize=5, label='imposter'),
 ]
 fig.legend(
     handles=legend_elements,
@@ -250,6 +285,10 @@ fig.legend(
 )
 
 #fig.suptitle(f'Gingivitis — per-layer OTU embeddings for {rand_srs}\nColor = final logit, marker: o=original, x=added', fontsize=12)
+base_dir = os.path.dirname(__file__) if '__file__' in globals() else os.getcwd()
+out_path = os.path.join(base_dir, 'layer_wise_projection.png')
+fig.savefig(out_path, dpi=350, bbox_inches='tight')
+print(f'saved figure: {out_path}')
 plt.show()
 
 # %%
