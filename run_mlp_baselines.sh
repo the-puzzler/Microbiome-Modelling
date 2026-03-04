@@ -40,5 +40,26 @@ run_step "Snowmelt MLP baselines" \
 run_step "DIABIMMUNE MLP baselines" \
   uv run python -u scripts/diabimmune/base_lines_mlp.py
 
-echo "All MLP baseline runs completed at: $(date)" | tee -a "$LOG_FILE"
+# Gingivitis classic baselines (LogReg + RandForest)
+run_step "Gingivitis baseline colonisation (LogReg/RandForest)" \
+  uv run python -u scripts/gingivitis/baselines_colonisation.py
+run_step "Gingivitis baseline dropout (LogReg/RandForest)" \
+  uv run python -u scripts/gingivitis/baselines_binary_taxa.py
 
+# Snowmelt classic baselines (LogReg + RandForest)
+run_step "Snowmelt baseline colonisation (LogReg/RandForest)" \
+  uv run python -u scripts/snowmelt/baselines_colonisation.py
+run_step "Snowmelt baseline dropout (LogReg/RandForest)" \
+  uv run python -u scripts/snowmelt/baselines_binary_taxa.py
+
+# DIABIMMUNE classic baselines (LogReg + RandForest)
+run_step "DIABIMMUNE baseline colonisation (LogReg/RandForest)" \
+  uv run python -u scripts/diabimmune/baselines_colonisation.py
+run_step "DIABIMMUNE baseline dropout (LogReg/RandForest)" \
+  uv run python -u scripts/diabimmune/baselines_binary_taxa.py
+
+# Extract random-split + grouped-CV baseline summaries from this log
+run_step "Extract baseline summaries from log" \
+  uv run python -u scripts/checks/extract_baseline_results.py --log "$LOG_FILE"
+
+echo "All MLP baseline runs completed at: $(date)" | tee -a "$LOG_FILE"

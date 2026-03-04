@@ -209,19 +209,42 @@ def _best_flip_rotate_alignment(XY, ref):
 # First subplot: DNA (input)
 XY0 = reduce2d(dna_all)
 XY0_aligned = _standardize_xy(XY0)
+prev_xy_aligned = XY0_aligned
 ax = axes[0][0]
 for flag, marker in ((True, 'o'), (False, 'x')):
     idx = np.where(is_original == flag)[0]
     if idx.size:
-        ax.scatter(
-            XY0_aligned[idx, 0],
-            XY0_aligned[idx, 1],
-            s=(8 if flag else 18),
-            alpha=0.85,
-            c=cmap(norm(final_logits[idx])),
-            marker=marker,
-            label=('original' if flag else 'imposter'),
-        )
+        if flag:
+            ax.scatter(
+                XY0_aligned[idx, 0],
+                XY0_aligned[idx, 1],
+                s=8,
+                alpha=0.85,
+                c=cmap(norm(final_logits[idx])),
+                marker=marker,
+                label='original',
+            )
+        else:
+            # Black underlay + colored overlay gives crosses a subtle outline.
+            ax.scatter(
+                XY0_aligned[idx, 0],
+                XY0_aligned[idx, 1],
+                s=22,
+                alpha=0.7,
+                c='black',
+                marker='x',
+                linewidths=1.3,
+            )
+            ax.scatter(
+                XY0_aligned[idx, 0],
+                XY0_aligned[idx, 1],
+                s=18,
+                alpha=0.9,
+                c=cmap(norm(final_logits[idx])),
+                marker='x',
+                linewidths=1.0,
+                label='imposter',
+            )
 ax.set_title('Input DNA')
 ax.set_xticks([])
 ax.set_yticks([])
@@ -233,18 +256,39 @@ for li, out in enumerate(layer_outputs, start=1):
     r, c = divmod(li, ncols)
     ax = axes[r][c]
     XY = reduce2d(out)
-    XY_aligned = _best_flip_rotate_alignment(XY, XY0)
+    XY_aligned = _best_flip_rotate_alignment(XY, prev_xy_aligned)
+    prev_xy_aligned = XY_aligned
     for flag, marker in ((True, 'o'), (False, 'x')):
         idx = np.where(is_original == flag)[0]
         if idx.size:
-            ax.scatter(
-                XY_aligned[idx, 0],
-                XY_aligned[idx, 1],
-                s=(8 if flag else 18),
-                alpha=0.85,
-                c=cmap(norm(final_logits[idx])),
-                marker=marker,
-            )
+            if flag:
+                ax.scatter(
+                    XY_aligned[idx, 0],
+                    XY_aligned[idx, 1],
+                    s=8,
+                    alpha=0.85,
+                    c=cmap(norm(final_logits[idx])),
+                    marker='o',
+                )
+            else:
+                ax.scatter(
+                    XY_aligned[idx, 0],
+                    XY_aligned[idx, 1],
+                    s=22,
+                    alpha=0.7,
+                    c='black',
+                    marker='x',
+                    linewidths=1.3,
+                )
+                ax.scatter(
+                    XY_aligned[idx, 0],
+                    XY_aligned[idx, 1],
+                    s=18,
+                    alpha=0.9,
+                    c=cmap(norm(final_logits[idx])),
+                    marker='x',
+                    linewidths=1.0,
+                )
     ax.set_title(f'Layer {li}')
     ax.set_xticks([])
     ax.set_yticks([])
@@ -282,6 +326,7 @@ fig.legend(
     bbox_to_anchor=(0.92, 0.88),
     borderaxespad=0.0,
     frameon=False,
+    fontsize=10,
 )
 
 #fig.suptitle(f'Gingivitis — per-layer OTU embeddings for {rand_srs}\nColor = final logit, marker: o=original, x=added', fontsize=12)

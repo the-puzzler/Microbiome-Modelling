@@ -57,4 +57,8 @@ run_step "IBS cross-country prediction (frozen embeddings + logistic regression)
 run_step "Infants environment prediction (frozen embeddings + logistic regression)" \
   uv run python -u scripts/infants/predict_env.py
 
+# Extract consolidated metrics from this experiment log
+run_step "Extract main-eval summaries from log" \
+  uv run python -u scripts/checks/extract_main_eval_results.py --log "$LOG_FILE"
+
 echo "All runs completed at: $(date)" | tee -a "$LOG_FILE"

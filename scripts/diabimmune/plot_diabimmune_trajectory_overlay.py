@@ -12,7 +12,7 @@ import numpy as np
 from matplotlib import cm
 from matplotlib import patheffects as pe
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyArrowPatch
+from matplotlib.patches import FancyArrow, FancyArrowPatch
 from matplotlib.legend_handler import HandlerPatch
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
@@ -958,7 +958,7 @@ def main():
         alpha=0.9,
         linewidths=0.7,
         zorder=5,
-        label="Real trajectory",
+        label="Real sample trajectory",
     )
 
     rollout_start_xy = rollout_xy[0]
@@ -970,7 +970,7 @@ def main():
         edgecolors=ROLLOUT_TRAJ_COLOR,
         linewidths=1.4,
         zorder=7,
-        label="Rollout trajectory",
+        label="Rollout sample trajectory",
     )
     (rollout_line,) = ax1.plot(
         rollout_xy[:, 0],
@@ -1010,28 +1010,40 @@ def main():
 
     class _HandlerArrowTop(HandlerPatch):
         def create_artists(self, legend, orig_handle, xdescent, ydescent, width, height, fontsize, trans):
-            p = FancyArrowPatch(
-                (xdescent, ydescent + 0.5 * height),
-                (xdescent + width, ydescent + 0.5 * height),
-                arrowstyle="-|>",
-                mutation_scale=fontsize * 1.5,
-                linewidth=1.0,
-                color="#5f5f5f",
-                alpha=0.35,
+            tail_w = max(0.18 * height, 0.9)
+            head_w = max(0.62 * height, 2.4)
+            head_l = max(0.36 * width, 3.0)
+            p = FancyArrow(
+                xdescent,
+                ydescent + 0.5 * height,
+                width,
+                0.0,
+                width=tail_w,
+                head_width=head_w,
+                head_length=head_l,
+                length_includes_head=True,
+                color="black",
+                alpha=0.14,
             )
             p.set_transform(trans)
             return [p]
 
     class _HandlerArrowBottom(HandlerPatch):
         def create_artists(self, legend, orig_handle, xdescent, ydescent, width, height, fontsize, trans):
-            p = FancyArrowPatch(
-                (xdescent, ydescent + 0.5 * height),
-                (xdescent + width, ydescent + 0.5 * height),
-                arrowstyle="-|>",
-                mutation_scale=fontsize * 1.5,
-                linewidth=1.0,
+            tail_w = max(0.18 * height, 0.9)
+            head_w = max(0.62 * height, 2.4)
+            head_l = max(0.36 * width, 3.0)
+            p = FancyArrow(
+                xdescent,
+                ydescent + 0.5 * height,
+                width,
+                0.0,
+                width=tail_w,
+                head_width=head_w,
+                head_length=head_l,
+                length_includes_head=True,
                 color=JACCARD_ARROW_COLOR,
-                alpha=max(0.6, float(JACCARD_ARROW_ALPHA)),
+                alpha=float(JACCARD_ARROW_ALPHA),
             )
             p.set_transform(trans)
             return [p]
@@ -1067,7 +1079,7 @@ def main():
                     label=l,
                 )
             )
-        elif l == "Real trajectory":
+        elif l == "Real sample trajectory":
             top_handles.append(
                 Line2D(
                     [0],
@@ -1079,7 +1091,7 @@ def main():
                     label=l,
                 )
             )
-        elif l == "Rollout trajectory":
+        elif l == "Rollout sample trajectory":
             top_handles.append(
                 Line2D(
                     [0],
@@ -1260,7 +1272,7 @@ def main():
 
     handles2 = handles2_mod
     labels2 = labels2_mod
-    drop_labels = {"Real trajectory", "Rollout start", "Rollout trajectory"}
+    drop_labels = {"Real sample trajectory", "Rollout start", "Rollout sample trajectory"}
     kept = [(h, l) for (h, l) in zip(handles2, labels2) if l not in drop_labels]
     handles2 = [arrow_handle2] + [h for (h, _l) in kept]
     labels2 = ["Direction to endpoint"] + [l for (_h, l) in kept]
