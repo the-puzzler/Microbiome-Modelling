@@ -175,7 +175,7 @@ def main():
     ax2.set_xlabel('Stability score (average OTU logit)')
     ax2.set_ylabel("Evenness (Pielou's J)")
     ax2.set_ylim(0, 1.02)
-    ax2.set_title(f'All Samples: Stability vs Evenness, colored by count (n={len(rows)})')
+    ax2.set_title('Stability vs Evenness')
     cb = fig2.colorbar(sc, ax=ax2, pad=0.01)
     cb.set_label('Count (log scale)')
     plt.tight_layout()
