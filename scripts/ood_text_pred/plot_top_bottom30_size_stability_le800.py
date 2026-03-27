@@ -382,9 +382,9 @@ def main():
     for ax in axes:
         ax.set_ylim(0, MAX_OTU)
         ax.set_xlabel('Stability score (average OTU logit)')
-    axes[0].set_ylabel('OTU count (<= 800)')
+    axes[0].set_ylabel('OTU Richness (<= 800)')
 
-    fig.suptitle('Stability vs OTU count (<=800) for Top/Bottom Terms and All Samples')
+    fig.suptitle('Stability vs OTU Richness (<=800) for Top/Bottom Terms and All Samples')
     plt.tight_layout()
     plt.savefig(OUT_PNG, dpi=350)
     print('Saved figure:', OUT_PNG)
@@ -432,9 +432,9 @@ def main():
         ax.set_ylim(0, MAX_OTU)
         ax.set_xlim(0, 1)
         ax.set_xlabel('Sigmoid(stability score)')
-    axes2[0].set_ylabel('OTU count (<= 800)')
+    axes2[0].set_ylabel('OTU Richness (<= 800)')
 
-    fig2.suptitle('Sigmoid(stability) vs OTU count (<=800) for Top/Bottom Terms and All Samples')
+    fig2.suptitle('Sigmoid(stability) vs OTU Richness (<=800) for Top/Bottom Terms and All Samples')
     plt.tight_layout()
     plt.savefig(OUT_PNG_SIGMOID, dpi=350)
     print('Saved figure:', OUT_PNG_SIGMOID)

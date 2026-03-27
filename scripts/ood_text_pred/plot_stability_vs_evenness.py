@@ -159,7 +159,7 @@ def main():
     pr, pp = pearsonr(x, y)
     sr, sp = spearmanr(x, y)
 
-    # Full-range color plot with a single continuous color scale (no count cap).
+    # Full-range color plot with a single continuous color scale (no richness cap).
     fig2, ax2 = plt.subplots(figsize=(7.2, 5.6))
     sc = ax2.scatter(
         x,
@@ -177,7 +177,7 @@ def main():
     ax2.set_ylim(0, 1.02)
     ax2.set_title('Stability vs Evenness')
     cb = fig2.colorbar(sc, ax=ax2, pad=0.01)
-    cb.set_label('Count (log scale)')
+    cb.set_label('Richness (log scale)')
     plt.tight_layout()
     plt.savefig(OUT_PNG_SIZE_COLOR, dpi=350)
 
@@ -199,9 +199,9 @@ def main():
     ax3.set_ylabel("Evenness (Pielou's J)")
     ax3.set_ylim(0, 1.02)
     ax3.set_xlim(0, 1)
-    ax3.set_title(f'All Samples: Sigmoid(stability) vs Evenness, colored by count (n={len(rows)})')
+    ax3.set_title(f'All Samples: Sigmoid(stability) vs Evenness, colored by Richness (n={len(rows)})')
     cb3 = fig3.colorbar(sc3, ax=ax3, pad=0.01)
-    cb3.set_label('Count (log scale)')
+    cb3.set_label('Richness (log scale)')
     plt.tight_layout()
     plt.savefig(OUT_PNG_SIZE_COLOR_SIGMOID, dpi=350)
 
